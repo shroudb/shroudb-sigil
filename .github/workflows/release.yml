@@ -1,0 +1,30 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    uses: shroudb/.github/.github/workflows/rust-release.yml@main
+    permissions:
+      contents: write
+      packages: write
+    with:
+      product: "sigil"
+      server_package: "shroudb-sigil-server"
+      server_binary: "shroudb-sigil"
+      cli_package: "shroudb-sigil-cli"
+      cli_binary: "shroudb-sigil-cli"
+      docker_server_target: "shroudb-sigil"
+      docker_cli_target: "shroudb-sigil-cli"
+      crates: "shroudb-sigil-core,shroudb-sigil-engine,shroudb-sigil-protocol,shroudb-sigil-client,shroudb-sigil-server,shroudb-sigil-cli"
+    secrets:
+      REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+      GH_PAT: ${{ secrets.GH_PAT }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}

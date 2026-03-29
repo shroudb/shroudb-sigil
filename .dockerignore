@@ -1,0 +1,8 @@
+target/
+.cargo/
+.git/
+.github/
+sigil-data/
+*.md
+!README.md
+LICENSE*
