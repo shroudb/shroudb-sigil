@@ -127,7 +127,8 @@ impl<S: Store> SigilEngine<S> {
         schema_name: &str,
         user_id: &str,
     ) -> Result<UserRecord, SigilError> {
-        self.coordinator.get_user(schema_name, user_id).await
+        let schema = self.schemas.get(schema_name).await?;
+        self.coordinator.get_user(&schema, user_id).await
     }
 
     pub async fn user_update(

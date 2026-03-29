@@ -160,20 +160,50 @@ impl<S: Store> WriteCoordinator<S> {
         Ok(user_record)
     }
 
-    /// Get a user record.
-    pub async fn get_user(
-        &self,
-        schema_name: &str,
-        user_id: &str,
-    ) -> Result<UserRecord, SigilError> {
-        let ns = users_namespace(schema_name);
+    /// Get a user record, decrypting PII fields if Cipher is available.
+    pub async fn get_user(&self, schema: &Schema, user_id: &str) -> Result<UserRecord, SigilError> {
+        let ns = users_namespace(&schema.name);
         let entry = self
             .store
             .get(&ns, user_id.as_bytes(), None)
             .await
             .map_err(|_| SigilError::UserNotFound)?;
 
-        serde_json::from_slice(&entry.value).map_err(|e| SigilError::Internal(e.to_string()))
+        let mut record: UserRecord = serde_json::from_slice(&entry.value)
+            .map_err(|e| SigilError::Internal(e.to_string()))?;
+
+        // Decrypt PII fields if Cipher is available
+        if let Some(ref cipher) = self.capabilities.cipher {
+            for field_def in &schema.fields {
+                let treatment = route_field(&field_def.annotations);
+                if matches!(
+                    treatment,
+                    FieldTreatment::EncryptedPii | FieldTreatment::SearchableEncrypted
+                ) && let Some(ciphertext_val) = record.fields.get(&field_def.name)
+                    && let Some(ciphertext) = ciphertext_val.as_str()
+                {
+                    let context = format!("{}/{}/{}", schema.name, user_id, field_def.name);
+                    match cipher.decrypt(ciphertext, Some(&context)).await {
+                        Ok(plaintext) => {
+                            let plaintext_str = String::from_utf8(plaintext)
+                                .unwrap_or_else(|e| hex::encode(e.into_bytes()));
+                            record
+                                .fields
+                                .insert(field_def.name.clone(), serde_json::json!(plaintext_str));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                field = %field_def.name,
+                                error = %e,
+                                "failed to decrypt PII field"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(record)
     }
 
     /// Update non-credential fields on an existing user.
@@ -234,11 +264,11 @@ impl<S: Store> WriteCoordinator<S> {
                         field: field_name.clone(),
                         reason: "PII field must be a string".into(),
                     })?;
-                    let ciphertext = cipher.encrypt(plaintext.as_bytes()).await?;
-                    record.fields.insert(
-                        field_name.clone(),
-                        serde_json::json!(hex::encode(&ciphertext)),
-                    );
+                    let context = format!("{}/{}/{}", schema.name, user_id, field_name);
+                    let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
+                    record
+                        .fields
+                        .insert(field_name.clone(), serde_json::json!(ciphertext));
                 }
                 shroudb_sigil_core::routing::FieldTreatment::SearchableEncrypted => {
                     let cipher = self
@@ -255,12 +285,12 @@ impl<S: Store> WriteCoordinator<S> {
                         field: field_name.clone(),
                         reason: "searchable PII field must be a string".into(),
                     })?;
-                    let ciphertext = cipher.encrypt(plaintext.as_bytes()).await?;
+                    let context = format!("{}/{}/{}", schema.name, user_id, field_name);
+                    let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
                     let _blind_index = veil.index(plaintext.as_bytes()).await?;
-                    record.fields.insert(
-                        field_name.clone(),
-                        serde_json::json!(hex::encode(&ciphertext)),
-                    );
+                    record
+                        .fields
+                        .insert(field_name.clone(), serde_json::json!(ciphertext));
                 }
                 shroudb_sigil_core::routing::FieldTreatment::VersionedSecret => {
                     let keep = self
@@ -364,12 +394,12 @@ impl<S: Store> WriteCoordinator<S> {
                     reason: "PII field must be a string".into(),
                 })?;
 
-                let ciphertext = cipher.encrypt(plaintext.as_bytes()).await?;
-                let encoded = hex::encode(&ciphertext);
+                let context = format!("{schema_name}/{user_id}/{field_name}");
+                let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
 
                 Ok(FieldWriteResult {
                     compensating_op: None,
-                    user_record_value: Some(serde_json::json!(encoded)),
+                    user_record_value: Some(serde_json::json!(ciphertext)),
                 })
             }
 
@@ -390,13 +420,13 @@ impl<S: Store> WriteCoordinator<S> {
                     reason: "searchable PII field must be a string".into(),
                 })?;
 
-                let ciphertext = cipher.encrypt(plaintext.as_bytes()).await?;
+                let context = format!("{schema_name}/{user_id}/{field_name}");
+                let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
                 let _blind_index = veil.index(plaintext.as_bytes()).await?;
-                let encoded = hex::encode(&ciphertext);
 
                 Ok(FieldWriteResult {
                     compensating_op: None,
-                    user_record_value: Some(serde_json::json!(encoded)),
+                    user_record_value: Some(serde_json::json!(ciphertext)),
                 })
             }
 
@@ -618,7 +648,7 @@ mod tests {
             .await
             .unwrap();
 
-        let record = coord.get_user("myapp", "user1").await.unwrap();
+        let record = coord.get_user(&schema, "user1").await.unwrap();
         assert_eq!(record.user_id, "user1");
         assert_eq!(record.fields["org_id"], "acme-corp");
     }
@@ -626,7 +656,8 @@ mod tests {
     #[tokio::test]
     async fn get_nonexistent_user() {
         let (_store, coord) = setup().await;
-        let err = coord.get_user("myapp", "nope").await.unwrap_err();
+        let schema = test_schema();
+        let err = coord.get_user(&schema, "nope").await.unwrap_err();
         assert!(err.to_string().contains("not found"));
     }
 
@@ -642,7 +673,7 @@ mod tests {
 
         coord.delete_user("myapp", "user1").await.unwrap();
 
-        assert!(coord.get_user("myapp", "user1").await.is_err());
+        assert!(coord.get_user(&schema, "user1").await.is_err());
     }
 
     #[tokio::test]

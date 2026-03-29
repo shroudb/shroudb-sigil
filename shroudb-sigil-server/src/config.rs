@@ -11,6 +11,20 @@ pub struct SigilServerConfig {
     pub store: StoreConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub cipher: Option<CipherConfig>,
+}
+
+/// Cipher engine connection for PII field encryption.
+#[derive(Debug, Deserialize)]
+pub struct CipherConfig {
+    /// Cipher server address (e.g., "127.0.0.1:6599").
+    pub addr: String,
+    /// Keyring name for PII field encryption.
+    pub keyring: String,
+    /// Auth token for Cipher server (optional).
+    #[serde(default)]
+    pub auth_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

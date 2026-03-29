@@ -5,6 +5,7 @@
 //! Consumes the ShrouDB Store trait for persistence.
 
 pub mod capabilities;
+pub mod cipher_remote;
 pub mod credential;
 pub mod engine;
 pub mod jwt;

@@ -115,8 +115,23 @@ async fn main() -> anyhow::Result<()> {
         refresh_ttl_secs: parse_duration_secs(&cfg.auth.refresh_ttl)?,
         ..Default::default()
     };
+    // Capabilities: connect to external engines
+    let mut capabilities = Capabilities::default();
+
+    if let Some(ref cipher_cfg) = cfg.cipher {
+        let cipher_ops = shroudb_sigil_engine::cipher_remote::RemoteCipherOps::connect(
+            &cipher_cfg.addr,
+            cipher_cfg.keyring.clone(),
+            cipher_cfg.auth_token.as_deref(),
+        )
+        .await
+        .context("failed to connect to cipher server")?;
+        capabilities.cipher = Some(Box::new(cipher_ops));
+        tracing::info!(addr = %cipher_cfg.addr, keyring = %cipher_cfg.keyring, "cipher connected");
+    }
+
     let engine = Arc::new(
-        SigilEngine::new(store, sigil_config, Capabilities::default())
+        SigilEngine::new(store, sigil_config, capabilities)
             .await
             .context("failed to initialize sigil engine")?,
     );

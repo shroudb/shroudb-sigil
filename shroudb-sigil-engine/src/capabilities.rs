@@ -1,15 +1,23 @@
 use shroudb_sigil_core::error::SigilError;
 
 /// Trait for Cipher operations (encrypt/decrypt PII fields).
+///
+/// Encrypt takes raw plaintext bytes and an optional AAD context string.
+/// Returns a ciphertext envelope string (with embedded key version).
+///
+/// Decrypt takes the ciphertext envelope string and the same context.
+/// Returns the original plaintext bytes.
 pub trait CipherOps: Send + Sync {
     fn encrypt(
         &self,
         plaintext: &[u8],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, SigilError>> + Send + '_>>;
+        context: Option<&str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, SigilError>> + Send + '_>>;
 
     fn decrypt(
         &self,
-        ciphertext: &[u8],
+        ciphertext: &str,
+        context: Option<&str>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, SigilError>> + Send + '_>>;
 }
 
