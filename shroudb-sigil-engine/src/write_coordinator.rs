@@ -185,7 +185,12 @@ impl<S: Store> WriteCoordinator<S> {
             .ok_or_else(|| SigilError::Internal("malformed veil entry id".into()))
     }
 
-    /// Get a user record, decrypting PII fields if Cipher is available.
+    /// Get a user record with PII fields redacted.
+    ///
+    /// PII fields are stored encrypted and are NOT decrypted on read.
+    /// The response shows `"[encrypted]"` for PII fields. Plaintext PII
+    /// is only accessible via Courier's just-in-time access when there's
+    /// a legitimate, auditable reason (e.g., sending a notification).
     pub async fn get_user(&self, schema: &Schema, user_id: &str) -> Result<UserRecord, SigilError> {
         let ns = users_namespace(&schema.name);
         let entry = self
@@ -197,34 +202,17 @@ impl<S: Store> WriteCoordinator<S> {
         let mut record: UserRecord = serde_json::from_slice(&entry.value)
             .map_err(|e| SigilError::Internal(e.to_string()))?;
 
-        // Decrypt PII fields if Cipher is available
-        if let Some(ref cipher) = self.capabilities.cipher {
-            for field_def in &schema.fields {
-                let treatment = route_field(&field_def.annotations);
-                if matches!(
-                    treatment,
-                    FieldTreatment::EncryptedPii | FieldTreatment::SearchableEncrypted
-                ) && let Some(ciphertext_val) = record.fields.get(&field_def.name)
-                    && let Some(ciphertext) = ciphertext_val.as_str()
-                {
-                    let context = format!("{}/{}/{}", schema.name, user_id, field_def.name);
-                    match cipher.decrypt(ciphertext, Some(&context)).await {
-                        Ok(plaintext) => {
-                            let plaintext_str = String::from_utf8(plaintext)
-                                .unwrap_or_else(|e| hex::encode(e.into_bytes()));
-                            record
-                                .fields
-                                .insert(field_def.name.clone(), serde_json::json!(plaintext_str));
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                field = %field_def.name,
-                                error = %e,
-                                "failed to decrypt PII field"
-                            );
-                        }
-                    }
-                }
+        // Redact PII fields — never return plaintext or ciphertext
+        for field_def in &schema.fields {
+            let treatment = route_field(&field_def.annotations);
+            if matches!(
+                treatment,
+                FieldTreatment::EncryptedPii | FieldTreatment::SearchableEncrypted
+            ) && record.fields.contains_key(&field_def.name)
+            {
+                record
+                    .fields
+                    .insert(field_def.name.clone(), serde_json::json!("[encrypted]"));
             }
         }
 

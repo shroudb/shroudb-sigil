@@ -959,7 +959,7 @@ async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
         resp.text().await
     );
 
-    // Get user — email should be decrypted back to plaintext
+    // Get user — email should be redacted (PII is never exposed via GET)
     let resp = client
         .get(server.http_url("/sigil/pii-test/users/alice"))
         .send()
@@ -970,8 +970,8 @@ async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
     assert_eq!(user["user_id"], "alice");
     assert_eq!(user["fields"]["org"], "acme");
     assert_eq!(
-        user["fields"]["email"], "alice@example.com",
-        "PII field should be decrypted on read"
+        user["fields"]["email"], "[encrypted]",
+        "PII field should be redacted on read"
     );
 
     // Password should not be in user record
@@ -989,7 +989,7 @@ async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    // Verify updated PII decrypts correctly
+    // Verify updated PII is still redacted
     let resp = client
         .get(server.http_url("/sigil/pii-test/users/alice"))
         .send()
@@ -997,8 +997,8 @@ async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
         .unwrap();
     let user: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(
-        user["fields"]["email"], "newalice@example.com",
-        "updated PII should decrypt correctly"
+        user["fields"]["email"], "[encrypted]",
+        "updated PII should still be redacted"
     );
 
     // Verify credentials still work
@@ -1092,14 +1092,14 @@ async fn cipher_veil_searchable_pii_roundtrip() {
         assert_eq!(resp.status(), 201, "create {id} failed");
     }
 
-    // Get user — email should be decrypted
+    // Get user — email should be redacted
     let resp = client
         .get(server.http_url("/sigil/search-test/users/alice"))
         .send()
         .await
         .unwrap();
     let user: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(user["fields"]["email"], "alice@example.com");
+    assert_eq!(user["fields"]["email"], "[encrypted]");
 
     // Search via Veil directly to verify indexing worked
     let mut veil_client = shroudb_veil_client::VeilClient::connect(&veil.tcp_addr)
@@ -1251,8 +1251,8 @@ async fn login_by_encrypted_email() {
         "unknown email should fail"
     );
 
-    // ── Verify the email is encrypted in storage ────────────────────
-    // Get user — Sigil decrypts for us, but the DB has ciphertext
+    // ── Verify the email is redacted in GET ────────────────────────
+    // PII is never exposed via GET — Courier handles just-in-time access
     let resp = client
         .get(server.http_url("/sigil/app/users/u_abc123"))
         .send()
@@ -1260,7 +1260,7 @@ async fn login_by_encrypted_email() {
         .unwrap();
     let user: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(
-        user["fields"]["email"], "alice@example.com",
-        "email should decrypt for the caller"
+        user["fields"]["email"], "[encrypted]",
+        "PII should be redacted, not decrypted"
     );
 }
