@@ -12,6 +12,7 @@ shroudb-sigil-core.workspace = true
 shroudb-store.workspace = true
 shroudb-cipher-client.workspace = true
 shroudb-crypto.workspace = true
+shroudb-veil-client.workspace = true
 
 argon2.workspace = true
 ring.workspace = true

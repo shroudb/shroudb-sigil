@@ -671,6 +671,7 @@ fn auth_server_config() -> TestServerConfig {
             },
         ],
         cipher: None,
+        veil: None,
     }
 }
 
@@ -1008,4 +1009,105 @@ async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Cipher + Veil: searchable encrypted PII
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn cipher_veil_searchable_pii_roundtrip() {
+    // Start Cipher server
+    let cipher = match TestCipherServer::start().await {
+        Some(c) => c,
+        None => {
+            eprintln!("skipping: cipher binary not found");
+            return;
+        }
+    };
+    cipher.create_keyring("sigil-pii", "aes-256-gcm").await;
+
+    // Start Veil server
+    let veil = match TestVeilServer::start().await {
+        Some(v) => v,
+        None => {
+            eprintln!("skipping: veil binary not found");
+            return;
+        }
+    };
+    veil.create_index("sigil-search").await;
+
+    // Start Sigil with both Cipher + Veil
+    let server = TestServer::start_with_config(TestServerConfig {
+        cipher: Some(TestCipherConfig {
+            addr: cipher.tcp_addr.clone(),
+            keyring: "sigil-pii".to_string(),
+        }),
+        veil: Some(TestVeilConfig {
+            addr: veil.tcp_addr.clone(),
+            index: "sigil-search".to_string(),
+        }),
+        ..Default::default()
+    })
+    .await
+    .expect("sigil server failed to start with cipher+veil");
+
+    let client = reqwest::Client::new();
+
+    // Register schema with searchable PII field
+    let resp = client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "search-test",
+            "fields": [
+                {"name": "email", "field_type": "string", "annotations": {"pii": true, "searchable": true}},
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+                {"name": "name", "field_type": "string"}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Create users with searchable email
+    for (id, email, name) in [
+        ("alice", "alice@example.com", "Alice"),
+        ("bob", "bob@example.com", "Bob"),
+        ("carol", "carol@other.com", "Carol"),
+    ] {
+        let resp = client
+            .post(server.http_url("/sigil/search-test/users"))
+            .json(&serde_json::json!({
+                "fields": {
+                    "user_id": id,
+                    "email": email,
+                    "password": "test12345678",
+                    "name": name
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 201, "create {id} failed");
+    }
+
+    // Get user — email should be decrypted
+    let resp = client
+        .get(server.http_url("/sigil/search-test/users/alice"))
+        .send()
+        .await
+        .unwrap();
+    let user: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(user["fields"]["email"], "alice@example.com");
+
+    // Search via Veil directly to verify indexing worked
+    let mut veil_client = shroudb_veil_client::VeilClient::connect(&veil.tcp_addr)
+        .await
+        .unwrap();
+    let results = veil_client
+        .search("sigil-search", "alice", None, None, None)
+        .await
+        .unwrap();
+    assert!(results.matched > 0, "veil should find entries for 'alice'");
 }

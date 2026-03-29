@@ -287,7 +287,9 @@ impl<S: Store> WriteCoordinator<S> {
                     })?;
                     let context = format!("{}/{}/{}", schema.name, user_id, field_name);
                     let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
-                    let _blind_index = veil.index(plaintext.as_bytes()).await?;
+                    let entry_id = format!("{}/{}", user_id, field_name);
+                    veil.put(&entry_id, plaintext.as_bytes(), Some(field_name))
+                        .await?;
                     record
                         .fields
                         .insert(field_name.clone(), serde_json::json!(ciphertext));
@@ -422,7 +424,9 @@ impl<S: Store> WriteCoordinator<S> {
 
                 let context = format!("{schema_name}/{user_id}/{field_name}");
                 let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
-                let _blind_index = veil.index(plaintext.as_bytes()).await?;
+                let entry_id = format!("{user_id}/{field_name}");
+                veil.put(&entry_id, plaintext.as_bytes(), Some(field_name))
+                    .await?;
 
                 Ok(FieldWriteResult {
                     compensating_op: None,

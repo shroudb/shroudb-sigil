@@ -13,6 +13,8 @@ pub struct SigilServerConfig {
     pub auth: AuthConfig,
     #[serde(default)]
     pub cipher: Option<CipherConfig>,
+    #[serde(default)]
+    pub veil: Option<VeilConfig>,
 }
 
 /// Cipher engine connection for PII field encryption.
@@ -23,6 +25,18 @@ pub struct CipherConfig {
     /// Keyring name for PII field encryption.
     pub keyring: String,
     /// Auth token for Cipher server (optional).
+    #[serde(default)]
+    pub auth_token: Option<String>,
+}
+
+/// Veil engine connection for searchable encrypted field indexing.
+#[derive(Debug, Deserialize)]
+pub struct VeilConfig {
+    /// Veil server address (e.g., "127.0.0.1:6799").
+    pub addr: String,
+    /// Index name for searchable PII fields.
+    pub index: String,
+    /// Auth token for Veil server (optional).
     #[serde(default)]
     pub auth_token: Option<String>,
 }

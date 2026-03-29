@@ -30,6 +30,7 @@ shroudb-storage = { version = "0.2.11", registry = "shroudb" }
 shroudb-acl = { version = "0.1.2", registry = "shroudb" }
 shroudb-cipher-client = { version = "1.0.0", registry = "shroudb" }
 shroudb-crypto = { version = "0.1.0", registry = "shroudb" }
+shroudb-veil-client = { version = "1.0.0", registry = "shroudb" }
 shroudb-protocol-wire = { version = "0.1.0", registry = "shroudb" }
 
 # Crypto

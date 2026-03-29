@@ -2175,6 +2175,7 @@ dependencies = [
  "shroudb-sigil-core",
  "shroudb-storage",
  "shroudb-store",
+ "shroudb-veil-client",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2224,6 +2225,7 @@ dependencies = [
  "shroudb-sigil-protocol",
  "shroudb-storage",
  "shroudb-store",
+ "shroudb-veil-client",
  "tempfile",
  "tokio",
  "toml",
@@ -2265,6 +2267,18 @@ dependencies = [
  "serde_json",
  "thiserror",
  "uuid",
+]
+
+[[package]]
+name = "shroudb-veil-client"
+version = "1.0.0"
+source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
+checksum = "21d4bb0f95ada7595b2bc109ef59512c155a32ea4679c78e2d10b541fb62d659"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

@@ -130,6 +130,18 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!(addr = %cipher_cfg.addr, keyring = %cipher_cfg.keyring, "cipher connected");
     }
 
+    if let Some(ref veil_cfg) = cfg.veil {
+        let veil_ops = shroudb_sigil_engine::veil_remote::RemoteVeilOps::connect(
+            &veil_cfg.addr,
+            veil_cfg.index.clone(),
+            veil_cfg.auth_token.as_deref(),
+        )
+        .await
+        .context("failed to connect to veil server")?;
+        capabilities.veil = Some(Box::new(veil_ops));
+        tracing::info!(addr = %veil_cfg.addr, index = %veil_cfg.index, "veil connected");
+    }
+
     let engine = Arc::new(
         SigilEngine::new(store, sigil_config, capabilities)
             .await

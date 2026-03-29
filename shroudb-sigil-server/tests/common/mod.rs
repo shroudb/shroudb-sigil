@@ -27,11 +27,18 @@ pub struct TestServerConfig {
     pub tokens: Vec<TestToken>,
     /// Cipher server connection. None = no cipher.
     pub cipher: Option<TestCipherConfig>,
+    /// Veil server connection. None = no veil.
+    pub veil: Option<TestVeilConfig>,
 }
 
 pub struct TestCipherConfig {
     pub addr: String,
     pub keyring: String,
+}
+
+pub struct TestVeilConfig {
+    pub addr: String,
+    pub index: String,
 }
 
 /// A running Cipher test server. Killed on drop.
@@ -105,6 +112,79 @@ impl TestCipherServer {
 }
 
 impl Drop for TestCipherServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// A running Veil test server. Killed on drop.
+pub struct TestVeilServer {
+    child: Child,
+    pub tcp_addr: String,
+    _data_dir: tempfile::TempDir,
+}
+
+impl TestVeilServer {
+    pub async fn start() -> Option<Self> {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let candidates = [
+            PathBuf::from(manifest_dir).join("../../shroudb-veil/target/debug/shroudb-veil"),
+            PathBuf::from(manifest_dir).join("../shroudb-veil/target/debug/shroudb-veil"),
+        ];
+        let binary = candidates.into_iter().find(|p| p.exists())?;
+
+        let tcp_port = free_port();
+        let tcp_addr = format!("127.0.0.1:{tcp_port}");
+        let data_dir = tempfile::tempdir().ok()?;
+
+        let child = Command::new(&binary)
+            .arg("--tcp-bind")
+            .arg(&tcp_addr)
+            .arg("--data-dir")
+            .arg(data_dir.path())
+            .arg("--log-level")
+            .arg("warn")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .ok()?;
+
+        let mut server = Self {
+            child,
+            tcp_addr: tcp_addr.clone(),
+            _data_dir: data_dir,
+        };
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if tokio::time::Instant::now() > deadline {
+                eprintln!("veil server failed to start");
+                return None;
+            }
+            if let Some(status) = server.child.try_wait().ok().flatten() {
+                eprintln!("veil server exited during startup: {status}");
+                return None;
+            }
+            if tokio::net::TcpStream::connect(&tcp_addr).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        Some(server)
+    }
+
+    /// Create an index on the Veil server.
+    pub async fn create_index(&self, name: &str) {
+        let mut client = shroudb_veil_client::VeilClient::connect(&self.tcp_addr)
+            .await
+            .unwrap();
+        client.index_create(name).await.unwrap();
+    }
+}
+
+impl Drop for TestVeilServer {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -243,6 +323,13 @@ mode = "embedded"
         toml.push_str(&format!(
             "\n[cipher]\naddr = \"{}\"\nkeyring = \"{}\"\n",
             cipher.addr, cipher.keyring
+        ));
+    }
+
+    if let Some(ref veil) = config.veil {
+        toml.push_str(&format!(
+            "\n[veil]\naddr = \"{}\"\nindex = \"{}\"\n",
+            veil.addr, veil.index
         ));
     }
 
