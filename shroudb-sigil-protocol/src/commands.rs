@@ -28,6 +28,11 @@ pub enum SigilCommand {
         schema: String,
         user_id: String,
     },
+    UserImport {
+        schema: String,
+        user_id: String,
+        fields: HashMap<String, serde_json::Value>,
+    },
     UserUpdate {
         schema: String,
         user_id: String,
@@ -163,6 +168,18 @@ fn parse_user(args: &[&str]) -> Result<SigilCommand, String> {
             Ok(SigilCommand::UserGet {
                 schema: args[2].to_string(),
                 user_id: args[3].to_string(),
+            })
+        }
+        "IMPORT" => {
+            if args.len() < 5 {
+                return Err("USER IMPORT <schema> <id> <json>".into());
+            }
+            let fields: HashMap<String, serde_json::Value> =
+                serde_json::from_str(args[4]).map_err(|e| format!("invalid fields JSON: {e}"))?;
+            Ok(SigilCommand::UserImport {
+                schema: args[2].to_string(),
+                user_id: args[3].to_string(),
+                fields,
             })
         }
         "UPDATE" => {

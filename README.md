@@ -48,6 +48,7 @@ Sigil listens on TCP port 6499 (RESP3 wire protocol) and HTTP port 6500 (REST AP
 POST   /sigil/schemas                        — register schema
 GET    /sigil/schemas/{name}                  — get schema definition
 POST   /sigil/{schema}/users                  — create user
+POST   /sigil/{schema}/users/import           — import user with pre-hashed credentials
 GET    /sigil/{schema}/users/{id}             — get user
 PATCH  /sigil/{schema}/users/{id}             — update non-credential fields
 DELETE /sigil/{schema}/users/{id}             — delete user
@@ -70,6 +71,7 @@ SCHEMA REGISTER <name> <json>
 SCHEMA GET <name>
 SCHEMA LIST
 USER CREATE <schema> <id> <json>
+USER IMPORT <schema> <id> <json>
 USER GET <schema> <id>
 USER UPDATE <schema> <id> <json>
 USER DELETE <schema> <id>

@@ -48,6 +48,7 @@ pub fn router(engine: AppState, http_config: HttpConfig) -> Router {
     // Rate-limited routes (expensive argon2 + credential stuffing targets)
     let rate_limited = Router::new()
         .route("/sigil/{schema}/users", post(user_create))
+        .route("/sigil/{schema}/users/import", post(user_import))
         .route("/sigil/{schema}/verify", post(verify))
         .route("/sigil/{schema}/sessions", post(session_create))
         .route("/sigil/{schema}/password/change", post(password_change))
@@ -171,6 +172,35 @@ async fn user_create(
     fields.remove("user_id");
 
     match engine.user_create(&schema, &user_id, &fields).await {
+        Ok(record) => created_json(serde_json::json!({
+            "user_id": record.user_id,
+            "fields": record.fields,
+            "created_at": record.created_at,
+        })),
+        Err(e) => map_err(e),
+    }
+}
+
+async fn user_import(
+    State(engine): State<AppState>,
+    Path(schema): Path<String>,
+    Json(body): Json<CreateUserBody>,
+) -> Response {
+    let user_id = body
+        .fields
+        .get("user_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if user_id.is_empty() {
+        return err_response(StatusCode::BAD_REQUEST, "user_id required in fields");
+    }
+
+    let mut fields = body.fields;
+    fields.remove("user_id");
+
+    match engine.user_import(&schema, &user_id, &fields).await {
         Ok(record) => created_json(serde_json::json!({
             "user_id": record.user_id,
             "fields": record.fields,

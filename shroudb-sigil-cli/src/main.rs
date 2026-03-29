@@ -84,6 +84,21 @@ async fn execute(client: &mut SigilClient, args: &[&str]) -> anyhow::Result<()> 
                     }))?
                 );
             }
+            "IMPORT" if args.len() >= 5 => {
+                let fields: serde_json::Value =
+                    serde_json::from_str(args[4]).context("invalid JSON")?;
+                let record = client
+                    .user_import(args[2], args[3], fields)
+                    .await
+                    .context("user import failed")?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "user_id": record.user_id,
+                        "fields": record.fields,
+                    }))?
+                );
+            }
             "GET" if args.len() >= 4 => {
                 let record = client
                     .user_get(args[2], args[3])

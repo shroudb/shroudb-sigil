@@ -128,6 +128,17 @@ parameters = [
 response = { user_id = "string", fields = "map", created_at = "integer", updated_at = "integer" }
 http = { method = "GET", path = "/sigil/{schema}/users/{id}" }
 
+[commands.USER_IMPORT]
+syntax = "USER IMPORT <schema> <id> <json>"
+description = "Import a user with pre-hashed credential fields. Non-credential fields processed normally."
+parameters = [
+    { name = "schema", type = "string", required = true },
+    { name = "id", type = "string", required = true, description = "User ID" },
+    { name = "json", type = "json", required = true, description = "Field name-value pairs (credential values are hashes, not plaintext)" },
+]
+response = { user_id = "string", fields = "map", created_at = "integer" }
+http = { method = "POST", path = "/sigil/{schema}/users/import", request_body = "CreateUserBody" }
+
 [commands.USER_UPDATE]
 syntax = "USER UPDATE <schema> <id> <json>"
 description = "Update non-credential fields on an existing user"

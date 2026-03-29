@@ -126,6 +126,23 @@ impl SigilClient {
         parse_user_record(&resp)
     }
 
+    /// Import a user with pre-hashed credential fields.
+    /// Credential field values are treated as hashes (not plaintext).
+    pub async fn user_import(
+        &mut self,
+        schema: &str,
+        user_id: &str,
+        fields: serde_json::Value,
+    ) -> Result<UserRecord, ClientError> {
+        let json = serde_json::to_string(&fields)
+            .map_err(|e| ClientError::Serialization(e.to_string()))?;
+        let resp = self
+            .command(&["USER", "IMPORT", schema, user_id, &json])
+            .await?;
+        check_status(&resp)?;
+        parse_user_record(&resp)
+    }
+
     /// Get a user record.
     pub async fn user_get(
         &mut self,

@@ -92,6 +92,20 @@ Each field is routed to the appropriate handler based on schema annotations. Cre
 
 All fields are written atomically. If any field fails (e.g., Cipher is unavailable for a PII field), the entire operation is rolled back.
 
+### Import
+
+Import a user with pre-hashed credential fields. Non-credential fields are processed normally (PII encrypted, indexes created, etc.). The credential value is treated as a hash — validated and stored directly, not hashed again.
+
+```sh
+curl -X POST http://localhost:6500/sigil/myapp/users/import \
+  -H "Content-Type: application/json" \
+  -d '{"fields": {"user_id": "alice", "password": "$2b$12$saltsalt...", "org_id": "acme"}}'
+```
+
+Supported hash formats: Argon2id, Argon2i, Argon2d, bcrypt (`$2b$`/`$2a$`/`$2y$`), scrypt. On the next successful verify, non-Argon2id hashes are transparently rehashed.
+
+Wire protocol: `USER IMPORT <schema> <id> <json>`
+
 ### Get
 
 ```sh
@@ -259,6 +273,7 @@ let names = client.schema_list().await?;
 
 // Users
 let record = client.user_create("myapp", "alice", fields_json).await?;
+let record = client.user_import("myapp", "alice", fields_with_hash).await?;
 let record = client.user_get("myapp", "alice").await?;
 let record = client.user_update("myapp", "alice", updates_json).await?;
 client.user_delete("myapp", "alice").await?;

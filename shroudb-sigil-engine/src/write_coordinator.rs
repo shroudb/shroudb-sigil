@@ -59,6 +59,30 @@ impl<S: Store> WriteCoordinator<S> {
         user_id: &str,
         fields: &HashMap<String, serde_json::Value>,
     ) -> Result<UserRecord, SigilError> {
+        self.create_user_inner(schema, user_id, fields, false).await
+    }
+
+    /// Import a user with pre-hashed credential fields.
+    ///
+    /// Same as `create_user` except credential fields are treated as hashes
+    /// (validated and stored directly) instead of plaintext (hashed with Argon2id).
+    /// Non-credential fields are processed identically to `create_user`.
+    pub async fn import_user(
+        &self,
+        schema: &Schema,
+        user_id: &str,
+        fields: &HashMap<String, serde_json::Value>,
+    ) -> Result<UserRecord, SigilError> {
+        self.create_user_inner(schema, user_id, fields, true).await
+    }
+
+    async fn create_user_inner(
+        &self,
+        schema: &Schema,
+        user_id: &str,
+        fields: &HashMap<String, serde_json::Value>,
+        import_mode: bool,
+    ) -> Result<UserRecord, SigilError> {
         // Validate all required fields are present
         for field_def in &schema.fields {
             if !fields.contains_key(&field_def.name) {
@@ -86,7 +110,14 @@ impl<S: Store> WriteCoordinator<S> {
             let treatment = route_field(&field_def.annotations);
 
             let result = self
-                .process_field(&schema.name, user_id, &field_def.name, value, treatment)
+                .process_field(
+                    &schema.name,
+                    user_id,
+                    &field_def.name,
+                    value,
+                    treatment,
+                    import_mode,
+                )
                 .await;
 
             match result {
@@ -290,17 +321,26 @@ impl<S: Store> WriteCoordinator<S> {
         field_name: &str,
         value: &serde_json::Value,
         treatment: FieldTreatment,
+        import_mode: bool,
     ) -> Result<FieldWriteResult, SigilError> {
         match treatment {
             FieldTreatment::Credential => {
-                let plaintext = value.as_str().ok_or_else(|| SigilError::InvalidField {
+                let field_value = value.as_str().ok_or_else(|| SigilError::InvalidField {
                     field: field_name.to_string(),
                     reason: "credential field must be a string".into(),
                 })?;
 
-                self.credentials
-                    .set_password(schema_name, user_id, plaintext)
-                    .await?;
+                if import_mode {
+                    // Import: value is a pre-hashed password — validate and store directly
+                    self.credentials
+                        .import_password(schema_name, user_id, field_value)
+                        .await?;
+                } else {
+                    // Create: value is plaintext — hash with Argon2id
+                    self.credentials
+                        .set_password(schema_name, user_id, field_value)
+                        .await?;
+                }
 
                 Ok(FieldWriteResult {
                     compensating_op: Some(CompensatingOp {

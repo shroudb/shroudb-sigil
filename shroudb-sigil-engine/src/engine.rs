@@ -114,6 +114,16 @@ impl<S: Store> SigilEngine<S> {
         self.coordinator.create_user(&schema, user_id, fields).await
     }
 
+    pub async fn user_import(
+        &self,
+        schema_name: &str,
+        user_id: &str,
+        fields: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<UserRecord, SigilError> {
+        let schema = self.schemas.get(schema_name).await?;
+        self.coordinator.import_user(&schema, user_id, fields).await
+    }
+
     pub async fn user_get(
         &self,
         schema_name: &str,
