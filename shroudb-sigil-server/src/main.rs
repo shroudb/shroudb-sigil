@@ -1,4 +1,5 @@
 mod config;
+mod http;
 mod tcp;
 
 use std::sync::Arc;
@@ -134,11 +135,23 @@ async fn main() -> anyhow::Result<()> {
         tcp::run_tcp(tcp_listener, tcp_engine, tcp_shutdown).await;
     });
 
+    // HTTP server
+    let http_listener = tokio::net::TcpListener::bind(cfg.server.http_bind)
+        .await
+        .context("failed to bind HTTP")?;
+
+    let http_router = http::router(engine.clone());
+    let http_handle = tokio::spawn(async move {
+        axum::serve(http_listener, http_router)
+            .await
+            .unwrap_or_else(|e| tracing::error!(error = %e, "HTTP server error"));
+    });
+
     // Banner
     eprintln!();
     eprintln!("Sigil v{}", env!("CARGO_PKG_VERSION"));
     eprintln!("├─ tcp:     {}", cfg.server.tcp_bind);
-    eprintln!("├─ http:    {} (not yet implemented)", cfg.server.http_bind);
+    eprintln!("├─ http:    {}", cfg.server.http_bind);
     eprintln!("├─ data:    {}", cfg.store.data_dir.display());
     eprintln!(
         "└─ key:     {}",
@@ -160,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("shutting down");
     let _ = shutdown_tx.send(true);
     let _ = tcp_handle.await;
+    http_handle.abort();
 
     Ok(())
 }
