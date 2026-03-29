@@ -44,7 +44,6 @@ pub struct SigilEngine<S: Store> {
     pub(crate) jwt: Arc<JwtManager<S>>,
     pub(crate) sessions: SessionManager<S>,
     pub(crate) coordinator: WriteCoordinator<S>,
-    _store: Arc<S>,
 }
 
 impl<S: Store> SigilEngine<S> {
@@ -84,7 +83,6 @@ impl<S: Store> SigilEngine<S> {
             jwt,
             sessions,
             coordinator,
-            _store: store,
         })
     }
 
