@@ -2132,6 +2132,7 @@ name = "shroudb-sigil-engine"
 version = "1.0.0"
 dependencies = [
  "argon2",
+ "hex",
  "postcard",
  "ring",
  "serde",
