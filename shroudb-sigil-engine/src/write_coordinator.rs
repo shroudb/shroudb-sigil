@@ -255,15 +255,30 @@ impl<S: Store> WriteCoordinator<S> {
         Ok(record)
     }
 
-    /// Delete a user and all associated data.
+    /// Delete a user and all associated data (credentials + sessions).
     pub async fn delete_user(&self, schema_name: &str, user_id: &str) -> Result<(), SigilError> {
         let users_ns = users_namespace(schema_name);
         let creds_ns = format!("sigil.{schema_name}.credentials");
+        let sessions_ns = format!("sigil.{schema_name}.sessions");
 
         // Delete user record
         let _ = self.store.delete(&users_ns, user_id.as_bytes()).await;
-        // Delete credential record (if exists)
+        // Delete credential record
         let _ = self.store.delete(&creds_ns, user_id.as_bytes()).await;
+
+        // Revoke all sessions for this user
+        if let Ok(page) = self.store.list(&sessions_ns, None, None, 10_000).await {
+            for key in &page.keys {
+                if let Ok(entry) = self.store.get(&sessions_ns, key, None).await
+                    && let Ok(record) = serde_json::from_slice::<
+                        shroudb_sigil_core::session::RefreshTokenRecord,
+                    >(&entry.value)
+                    && record.user_id == user_id
+                {
+                    let _ = self.store.delete(&sessions_ns, key).await;
+                }
+            }
+        }
 
         Ok(())
     }

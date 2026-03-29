@@ -227,6 +227,7 @@ impl<S: Store> SessionManager<S> {
                 && let Ok(record) = serde_json::from_slice::<RefreshTokenRecord>(&entry.value)
                 && record.user_id == user_id
                 && record.state == TokenState::Active
+                && now() <= record.expires_at
             {
                 sessions.push(record);
             }
