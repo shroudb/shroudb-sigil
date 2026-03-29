@@ -18,6 +18,8 @@ shroudb-sigil-protocol.workspace = true
 shroudb-store.workspace = true
 shroudb-storage.workspace = true
 shroudb-crypto.workspace = true
+ring.workspace = true
+shroudb-protocol-wire.workspace = true
 
 axum.workspace = true
 tokio.workspace = true

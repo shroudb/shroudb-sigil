@@ -2097,6 +2097,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "shroudb-protocol-wire"
+version = "0.1.0"
+source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
+checksum = "a5785b4df3d723d8850bcb818f308b4dc5a8d7f183cb906a751d79c97c5be036"
+dependencies = [
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "shroudb-sigil-cli"
 version = "1.0.0"
 dependencies = [
@@ -2176,9 +2186,11 @@ dependencies = [
  "metrics",
  "metrics-exporter-prometheus",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "shroudb-crypto",
+ "shroudb-protocol-wire",
  "shroudb-sigil-core",
  "shroudb-sigil-engine",
  "shroudb-sigil-protocol",
