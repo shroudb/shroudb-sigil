@@ -6,5 +6,6 @@
 
 pub mod capabilities;
 pub mod credential;
+pub mod jwt;
 pub mod schema_registry;
 pub mod write_coordinator;
