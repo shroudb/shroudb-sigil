@@ -2074,6 +2074,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "shroudb-acl"
+version = "0.1.2"
+source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
+checksum = "10fff64d690badac1dc67de5c189e677f71299273872f7ea7e3bd4b1a6426ec5"
+dependencies = [
+ "serde",
+ "shroudb-crypto",
+ "thiserror",
+]
+
+[[package]]
 name = "shroudb-crypto"
 version = "0.1.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
@@ -2164,6 +2175,7 @@ version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
+ "shroudb-acl",
  "shroudb-crypto",
  "shroudb-sigil-core",
  "shroudb-sigil-engine",
@@ -2189,6 +2201,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "shroudb-acl",
  "shroudb-crypto",
  "shroudb-protocol-wire",
  "shroudb-sigil-core",

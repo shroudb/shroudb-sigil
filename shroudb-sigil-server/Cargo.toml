@@ -15,6 +15,7 @@ path = "src/main.rs"
 shroudb-sigil-core.workspace = true
 shroudb-sigil-engine.workspace = true
 shroudb-sigil-protocol.workspace = true
+shroudb-acl.workspace = true
 shroudb-store.workspace = true
 shroudb-storage.workspace = true
 shroudb-crypto.workspace = true

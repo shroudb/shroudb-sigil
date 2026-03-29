@@ -1,3 +1,4 @@
+use shroudb_acl::AuthContext;
 use shroudb_sigil_engine::engine::SigilEngine;
 use shroudb_store::Store;
 
@@ -5,8 +6,28 @@ use crate::commands::SigilCommand;
 use crate::response::SigilResponse;
 
 /// Dispatch a parsed command to the SigilEngine and produce a response.
-pub async fn dispatch<S: Store>(engine: &SigilEngine<S>, cmd: SigilCommand) -> SigilResponse {
+///
+/// `auth_context` is the authenticated identity for this connection/request.
+/// `None` means auth is disabled (dev mode / no auth config).
+/// AUTH commands are handled externally by the TCP/HTTP layer — dispatch
+/// never sees them.
+pub async fn dispatch<S: Store>(
+    engine: &SigilEngine<S>,
+    cmd: SigilCommand,
+    auth_context: Option<&AuthContext>,
+) -> SigilResponse {
+    // Check ACL requirement before dispatch
+    let requirement = cmd.acl_requirement();
+    if let Some(ctx) = auth_context
+        && let Err(e) = ctx.check(&requirement)
+    {
+        return SigilResponse::error(format!("access denied: {e}"));
+    }
+
     match cmd {
+        // AUTH is handled at the connection layer, not here
+        SigilCommand::Auth { .. } => SigilResponse::error("AUTH handled at connection layer"),
+
         // ── Schema ──────────────────────────────────────────────────
         SigilCommand::SchemaRegister { schema } => match engine.schema_register(schema).await {
             Ok(version) => SigilResponse::ok(serde_json::json!({
@@ -286,7 +307,7 @@ mod tests {
             r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
         ])
         .unwrap();
-        let resp = dispatch(&engine, cmd).await;
+        let resp = dispatch(&engine, cmd, None).await;
         assert!(resp.is_ok());
 
         // Create user
@@ -298,27 +319,27 @@ mod tests {
             r#"{"password":"correcthorse","org":"acme"}"#,
         ])
         .unwrap();
-        let resp = dispatch(&engine, cmd).await;
+        let resp = dispatch(&engine, cmd, None).await;
         assert!(resp.is_ok());
 
         // Verify password
         let cmd = parse_command(&["USER", "VERIFY", "myapp", "user1", "correcthorse"]).unwrap();
-        let resp = dispatch(&engine, cmd).await;
+        let resp = dispatch(&engine, cmd, None).await;
         assert!(resp.is_ok());
 
         // Login (create session)
         let cmd = parse_command(&["SESSION", "CREATE", "myapp", "user1", "correcthorse"]).unwrap();
-        let resp = dispatch(&engine, cmd).await;
+        let resp = dispatch(&engine, cmd, None).await;
         assert!(resp.is_ok(), "session create failed: {resp:?}");
 
         // JWKS
         let cmd = parse_command(&["JWKS", "myapp"]).unwrap();
-        let resp = dispatch(&engine, cmd).await;
+        let resp = dispatch(&engine, cmd, None).await;
         assert!(resp.is_ok());
 
         // Health
         let cmd = parse_command(&["HEALTH"]).unwrap();
-        let resp = dispatch(&engine, cmd).await;
+        let resp = dispatch(&engine, cmd, None).await;
         assert!(resp.is_ok());
     }
 
@@ -331,7 +352,7 @@ mod tests {
             "SCHEMA", "REGISTER", "myapp",
             r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}}]}"#,
         ]).unwrap();
-        dispatch(&engine, cmd).await;
+        dispatch(&engine, cmd, None).await;
 
         let cmd = parse_command(&[
             "USER",
@@ -341,11 +362,11 @@ mod tests {
             r#"{"password":"correcthorse"}"#,
         ])
         .unwrap();
-        dispatch(&engine, cmd).await;
+        dispatch(&engine, cmd, None).await;
 
         // Wrong password
         let cmd = parse_command(&["USER", "VERIFY", "myapp", "user1", "wrongpassword"]).unwrap();
-        let resp = dispatch(&engine, cmd).await;
+        let resp = dispatch(&engine, cmd, None).await;
         assert!(!resp.is_ok());
     }
 }

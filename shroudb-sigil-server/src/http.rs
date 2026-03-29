@@ -1,20 +1,29 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 
+use shroudb_acl::{AuthContext, TokenValidator};
 use shroudb_sigil_engine::engine::SigilEngine;
+use shroudb_sigil_protocol::commands::SigilCommand;
+use shroudb_sigil_protocol::dispatch::dispatch;
+use shroudb_sigil_protocol::response::SigilResponse;
 use shroudb_storage::EmbeddedStore;
 
 use crate::cors;
 use crate::csrf::{CsrfConfig, csrf_middleware};
 use crate::rate_limit::{RateLimitConfig, RateLimitState, rate_limit_middleware};
 
-type AppState = Arc<SigilEngine<EmbeddedStore>>;
+/// Shared state for HTTP handlers.
+#[derive(Clone)]
+struct AppState {
+    engine: Arc<SigilEngine<EmbeddedStore>>,
+    token_validator: Option<Arc<dyn TokenValidator>>,
+}
 
 /// HTTP router configuration.
 pub struct HttpConfig {
@@ -35,7 +44,15 @@ impl Default for HttpConfig {
     }
 }
 
-pub fn router(engine: AppState, http_config: HttpConfig) -> Router {
+pub fn router(
+    engine: Arc<SigilEngine<EmbeddedStore>>,
+    token_validator: Option<Arc<dyn TokenValidator>>,
+    http_config: HttpConfig,
+) -> Router {
+    let state = AppState {
+        engine,
+        token_validator,
+    };
     let csrf_config = CsrfConfig::new(&http_config.cors_origins);
     let rate_state = RateLimitState::new(
         RateLimitConfig {
@@ -45,7 +62,6 @@ pub fn router(engine: AppState, http_config: HttpConfig) -> Router {
         http_config.trust_xff,
     );
 
-    // Rate-limited routes (expensive argon2 + credential stuffing targets)
     let rate_limited = Router::new()
         .route("/sigil/{schema}/users", post(user_create))
         .route("/sigil/{schema}/users/import", post(user_import))
@@ -58,9 +74,8 @@ pub fn router(engine: AppState, http_config: HttpConfig) -> Router {
             rate_state,
             rate_limit_middleware,
         ))
-        .with_state(engine.clone());
+        .with_state(state.clone());
 
-    // Non-rate-limited routes
     let open = Router::new()
         .route("/sigil/schemas", post(schema_register))
         .route("/sigil/schemas/{name}", get(schema_get))
@@ -75,7 +90,7 @@ pub fn router(engine: AppState, http_config: HttpConfig) -> Router {
         .route("/sigil/{schema}/sessions/{user_id}", get(session_list))
         .route("/sigil/{schema}/.well-known/jwks.json", get(jwks))
         .route("/sigil/health", get(health))
-        .with_state(engine);
+        .with_state(state);
 
     Router::new()
         .merge(rate_limited)
@@ -84,67 +99,126 @@ pub fn router(engine: AppState, http_config: HttpConfig) -> Router {
         .layer(cors::cors_layer(&http_config.cors_origins))
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────
+// ── Auth helper ─────────────────────────────────────────────────────
 
-fn ok_json(data: serde_json::Value) -> Response {
-    (StatusCode::OK, Json(data)).into_response()
+/// Extract the AuthContext from the Bearer token in the Authorization header.
+fn extract_auth_context(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<AuthContext>, Box<Response>> {
+    let Some(ref validator) = state.token_validator else {
+        return Ok(None);
+    };
+
+    let Some(auth_header) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
+        return Ok(None);
+    };
+
+    let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+        Box::new(err_response(
+            StatusCode::UNAUTHORIZED,
+            "expected Bearer token",
+        ))
+    })?;
+
+    match validator.validate(token) {
+        Ok(tok) => Ok(Some(tok.into_context())),
+        Err(e) => Err(Box::new(err_response(
+            StatusCode::UNAUTHORIZED,
+            &format!("invalid token: {e}"),
+        ))),
+    }
 }
 
-fn created_json(data: serde_json::Value) -> Response {
-    (StatusCode::CREATED, Json(data)).into_response()
+/// Run a SigilCommand through dispatch with ACL checks.
+/// This is the single code path for both TCP and HTTP — ACL is in dispatch.
+async fn run_command(
+    state: &AppState,
+    headers: &HeaderMap,
+    cmd: SigilCommand,
+) -> Result<SigilResponse, Response> {
+    let auth = extract_auth_context(state, headers).map_err(|e| *e)?;
+
+    if state.token_validator.is_some()
+        && auth.is_none()
+        && cmd.acl_requirement() != shroudb_acl::AclRequirement::None
+    {
+        return Err(err_response(
+            StatusCode::UNAUTHORIZED,
+            "authentication required — provide Authorization: Bearer <token>",
+        ));
+    }
+
+    Ok(dispatch(&state.engine, cmd, auth.as_ref()).await)
+}
+
+/// Convert a SigilResponse to an HTTP response.
+fn sigil_to_http(resp: SigilResponse, success_status: StatusCode) -> Response {
+    match resp {
+        SigilResponse::Ok(data) => (success_status, Json(data)).into_response(),
+        SigilResponse::Error(msg) => {
+            // Map error messages to HTTP status codes
+            let status = if msg.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if msg.contains("already exists") {
+                StatusCode::CONFLICT
+            } else if msg.contains("access denied") {
+                StatusCode::FORBIDDEN
+            } else if msg.contains("verification failed")
+                || msg.contains("invalid token")
+                || msg.contains("expired")
+                || msg.contains("reuse")
+            {
+                StatusCode::UNAUTHORIZED
+            } else if msg.contains("locked") {
+                StatusCode::TOO_MANY_REQUESTS
+            } else if msg.contains("capability") {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else if msg.contains("validation")
+                || msg.contains("missing")
+                || msg.contains("invalid")
+                || msg.contains("import failed")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, Json(serde_json::json!({"error": msg}))).into_response()
+        }
+    }
 }
 
 fn err_response(status: StatusCode, msg: &str) -> Response {
     (status, Json(serde_json::json!({"error": msg}))).into_response()
 }
 
-fn map_err(e: shroudb_sigil_core::error::SigilError) -> Response {
-    use shroudb_sigil_core::error::SigilError;
-    match &e {
-        SigilError::SchemaNotFound(_) | SigilError::UserNotFound => {
-            err_response(StatusCode::NOT_FOUND, &e.to_string())
-        }
-        SigilError::SchemaExists(_) | SigilError::UserExists => {
-            err_response(StatusCode::CONFLICT, &e.to_string())
-        }
-        SigilError::VerificationFailed => err_response(StatusCode::UNAUTHORIZED, &e.to_string()),
-        SigilError::AccountLocked { .. } => {
-            err_response(StatusCode::TOO_MANY_REQUESTS, &e.to_string())
-        }
-        SigilError::InvalidToken | SigilError::TokenExpired | SigilError::TokenReuse => {
-            err_response(StatusCode::UNAUTHORIZED, &e.to_string())
-        }
-        SigilError::SchemaValidation(_)
-        | SigilError::MissingField(_)
-        | SigilError::InvalidField { .. }
-        | SigilError::ImportFailed(_) => err_response(StatusCode::BAD_REQUEST, &e.to_string()),
-        SigilError::CapabilityMissing(_) => {
-            err_response(StatusCode::SERVICE_UNAVAILABLE, &e.to_string())
-        }
-        _ => err_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
-    }
-}
-
-// ── Schema ──────────────────────────────────────────────────────────
+// ── Handlers ────────────────────────────────────────────────────────
+// Each handler builds a SigilCommand and routes through run_command.
+// ACL checks happen in dispatch — handlers don't check auth themselves.
 
 async fn schema_register(
-    State(engine): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Json(schema): Json<shroudb_sigil_core::schema::Schema>,
 ) -> Response {
-    match engine.schema_register(schema).await {
-        Ok(version) => created_json(serde_json::json!({"status": "ok", "version": version})),
-        Err(e) => map_err(e),
+    let cmd = SigilCommand::SchemaRegister { schema };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::CREATED),
+        Err(r) => r,
     }
 }
 
-async fn schema_get(State(engine): State<AppState>, Path(name): Path<String>) -> Response {
-    match engine.schema_get(&name).await {
-        Ok(schema) => ok_json(serde_json::json!(schema)),
-        Err(e) => map_err(e),
+async fn schema_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
+    let cmd = SigilCommand::SchemaGet { name };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
     }
 }
-
-// ── User ────────────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
 struct CreateUserBody {
@@ -152,37 +226,37 @@ struct CreateUserBody {
 }
 
 async fn user_create(
-    State(engine): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<CreateUserBody>,
 ) -> Response {
-    // user_id must be in the fields or as a separate field
     let user_id = body
         .fields
         .get("user_id")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-
     if user_id.is_empty() {
         return err_response(StatusCode::BAD_REQUEST, "user_id required in fields");
     }
-
     let mut fields = body.fields;
     fields.remove("user_id");
 
-    match engine.user_create(&schema, &user_id, &fields).await {
-        Ok(record) => created_json(serde_json::json!({
-            "user_id": record.user_id,
-            "fields": record.fields,
-            "created_at": record.created_at,
-        })),
-        Err(e) => map_err(e),
+    let cmd = SigilCommand::UserCreate {
+        schema,
+        user_id,
+        fields,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::CREATED),
+        Err(r) => r,
     }
 }
 
 async fn user_import(
-    State(engine): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<CreateUserBody>,
 ) -> Response {
@@ -192,21 +266,20 @@ async fn user_import(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-
     if user_id.is_empty() {
         return err_response(StatusCode::BAD_REQUEST, "user_id required in fields");
     }
-
     let mut fields = body.fields;
     fields.remove("user_id");
 
-    match engine.user_import(&schema, &user_id, &fields).await {
-        Ok(record) => created_json(serde_json::json!({
-            "user_id": record.user_id,
-            "fields": record.fields,
-            "created_at": record.created_at,
-        })),
-        Err(e) => map_err(e),
+    let cmd = SigilCommand::UserImport {
+        schema,
+        user_id,
+        fields,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::CREATED),
+        Err(r) => r,
     }
 }
 
@@ -216,15 +289,18 @@ struct UserPath {
     id: String,
 }
 
-async fn user_get(State(engine): State<AppState>, Path(path): Path<UserPath>) -> Response {
-    match engine.user_get(&path.schema, &path.id).await {
-        Ok(record) => ok_json(serde_json::json!({
-            "user_id": record.user_id,
-            "fields": record.fields,
-            "created_at": record.created_at,
-            "updated_at": record.updated_at,
-        })),
-        Err(e) => map_err(e),
+async fn user_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(path): Path<UserPath>,
+) -> Response {
+    let cmd = SigilCommand::UserGet {
+        schema: path.schema,
+        user_id: path.id,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
     }
 }
 
@@ -234,31 +310,36 @@ struct UpdateUserBody {
 }
 
 async fn user_update(
-    State(engine): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Path(path): Path<UserPath>,
     Json(body): Json<UpdateUserBody>,
 ) -> Response {
-    match engine
-        .user_update(&path.schema, &path.id, &body.fields)
-        .await
-    {
-        Ok(record) => ok_json(serde_json::json!({
-            "user_id": record.user_id,
-            "fields": record.fields,
-            "updated_at": record.updated_at,
-        })),
-        Err(e) => map_err(e),
+    let cmd = SigilCommand::UserUpdate {
+        schema: path.schema,
+        user_id: path.id,
+        fields: body.fields,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
     }
 }
 
-async fn user_delete(State(engine): State<AppState>, Path(path): Path<UserPath>) -> Response {
-    match engine.user_delete(&path.schema, &path.id).await {
-        Ok(()) => ok_json(serde_json::json!({"status": "ok"})),
-        Err(e) => map_err(e),
+async fn user_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(path): Path<UserPath>,
+) -> Response {
+    let cmd = SigilCommand::UserDelete {
+        schema: path.schema,
+        user_id: path.id,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
     }
 }
-
-// ── Verify ──────────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
 struct VerifyBody {
@@ -267,20 +348,21 @@ struct VerifyBody {
 }
 
 async fn verify(
-    State(engine): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<VerifyBody>,
 ) -> Response {
-    match engine
-        .user_verify(&schema, &body.user_id, &body.password)
-        .await
-    {
-        Ok(_) => ok_json(serde_json::json!({"status": "ok", "valid": true})),
-        Err(e) => map_err(e),
+    let cmd = SigilCommand::UserVerify {
+        schema,
+        user_id: body.user_id,
+        password: body.password,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
     }
 }
-
-// ── Sessions ────────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
 struct LoginBody {
@@ -291,25 +373,20 @@ struct LoginBody {
 }
 
 async fn session_create(
-    State(engine): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<LoginBody>,
 ) -> Response {
-    match engine
-        .session_create(
-            &schema,
-            &body.user_id,
-            &body.password,
-            body.metadata.as_ref(),
-        )
-        .await
-    {
-        Ok(pair) => ok_json(serde_json::json!({
-            "access_token": pair.access_token,
-            "refresh_token": pair.refresh_token,
-            "expires_in": pair.expires_in,
-        })),
-        Err(e) => map_err(e),
+    let cmd = SigilCommand::SessionCreate {
+        schema,
+        user_id: body.user_id,
+        password: body.password,
+        metadata: body.metadata,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
     }
 }
 
@@ -319,17 +396,18 @@ struct RefreshBody {
 }
 
 async fn session_refresh(
-    State(engine): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<RefreshBody>,
 ) -> Response {
-    match engine.session_refresh(&schema, &body.refresh_token).await {
-        Ok(pair) => ok_json(serde_json::json!({
-            "access_token": pair.access_token,
-            "refresh_token": pair.refresh_token,
-            "expires_in": pair.expires_in,
-        })),
-        Err(e) => map_err(e),
+    let cmd = SigilCommand::SessionRefresh {
+        schema,
+        token: body.refresh_token,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
     }
 }
 
@@ -340,22 +418,21 @@ struct RevokeBody {
 }
 
 async fn session_revoke_body(
-    State(engine): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<RevokeBody>,
 ) -> Response {
-    if let Some(ref token) = body.refresh_token {
-        match engine.session_revoke(&schema, token).await {
-            Ok(()) => ok_json(serde_json::json!({"status": "ok"})),
-            Err(e) => map_err(e),
-        }
-    } else if let Some(ref user_id) = body.user_id {
-        match engine.session_revoke_all(&schema, user_id).await {
-            Ok(count) => ok_json(serde_json::json!({"status": "ok", "revoked": count})),
-            Err(e) => map_err(e),
-        }
+    let cmd = if let Some(token) = body.refresh_token {
+        SigilCommand::SessionRevoke { schema, token }
+    } else if let Some(user_id) = body.user_id {
+        SigilCommand::SessionRevokeAll { schema, user_id }
     } else {
-        err_response(StatusCode::BAD_REQUEST, "refresh_token or user_id required")
+        return err_response(StatusCode::BAD_REQUEST, "refresh_token or user_id required");
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
     }
 }
 
@@ -366,29 +443,19 @@ struct SessionListPath {
 }
 
 async fn session_list(
-    State(engine): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Path(path): Path<SessionListPath>,
 ) -> Response {
-    match engine.session_list(&path.schema, &path.user_id).await {
-        Ok(sessions) => {
-            let items: Vec<serde_json::Value> = sessions
-                .iter()
-                .map(|s| {
-                    serde_json::json!({
-                        "family_id": s.family_id,
-                        "generation": s.generation,
-                        "created_at": s.created_at,
-                        "expires_at": s.expires_at,
-                    })
-                })
-                .collect();
-            ok_json(serde_json::json!(items))
-        }
-        Err(e) => map_err(e),
+    let cmd = SigilCommand::SessionList {
+        schema: path.schema,
+        user_id: path.user_id,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
     }
 }
-
-// ── Password ────────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
 struct ChangePasswordBody {
@@ -398,21 +465,20 @@ struct ChangePasswordBody {
 }
 
 async fn password_change(
-    State(engine): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<ChangePasswordBody>,
 ) -> Response {
-    match engine
-        .password_change(
-            &schema,
-            &body.user_id,
-            &body.old_password,
-            &body.new_password,
-        )
-        .await
-    {
-        Ok(()) => ok_json(serde_json::json!({"status": "ok"})),
-        Err(e) => map_err(e),
+    let cmd = SigilCommand::PasswordChange {
+        schema,
+        user_id: body.user_id,
+        old_password: body.old_password,
+        new_password: body.new_password,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
     }
 }
 
@@ -423,16 +489,19 @@ struct ResetPasswordBody {
 }
 
 async fn password_reset(
-    State(engine): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<ResetPasswordBody>,
 ) -> Response {
-    match engine
-        .password_reset(&schema, &body.user_id, &body.new_password)
-        .await
-    {
-        Ok(()) => ok_json(serde_json::json!({"status": "ok"})),
-        Err(e) => map_err(e),
+    let cmd = SigilCommand::PasswordReset {
+        schema,
+        user_id: body.user_id,
+        new_password: body.new_password,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
     }
 }
 
@@ -443,33 +512,35 @@ struct ImportPasswordBody {
 }
 
 async fn password_import(
-    State(engine): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<ImportPasswordBody>,
 ) -> Response {
-    match engine
-        .password_import(&schema, &body.user_id, &body.hash)
-        .await
-    {
-        Ok(algo) => ok_json(serde_json::json!({
-            "status": "ok",
-            "algorithm": format!("{algo:?}").to_lowercase(),
-        })),
-        Err(e) => map_err(e),
+    let cmd = SigilCommand::PasswordImport {
+        schema,
+        user_id: body.user_id,
+        hash: body.hash,
+        metadata: None,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
     }
 }
 
-// ── JWT ─────────────────────────────────────────────────────────────
-
-async fn jwks(State(engine): State<AppState>, Path(schema): Path<String>) -> Response {
-    match engine.jwks(&schema).await {
-        Ok(jwks) => ok_json(jwks),
-        Err(e) => map_err(e),
+async fn jwks(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(schema): Path<String>,
+) -> Response {
+    let cmd = SigilCommand::Jwks { schema };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
     }
 }
-
-// ── Health ──────────────────────────────────────────────────────────
 
 async fn health() -> Response {
-    ok_json(serde_json::json!({"status": "ok"}))
+    (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
 }

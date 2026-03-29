@@ -1,10 +1,16 @@
 use std::collections::HashMap;
 
+use shroudb_acl::{AclRequirement, Scope};
 use shroudb_sigil_core::schema::Schema;
 
 /// Parsed Sigil wire protocol command.
 #[derive(Debug)]
 pub enum SigilCommand {
+    /// Authenticate this connection with a token.
+    Auth {
+        token: String,
+    },
+
     // Schema
     SchemaRegister {
         schema: Schema,
@@ -96,6 +102,53 @@ pub enum SigilCommand {
     Health,
 }
 
+impl SigilCommand {
+    /// The ACL requirement for this command.
+    /// Checked against the connection's `AuthContext` before dispatch.
+    pub fn acl_requirement(&self) -> AclRequirement {
+        match self {
+            // Pre-auth / public
+            SigilCommand::Auth { .. } | SigilCommand::Health => AclRequirement::None,
+
+            // Public: JWKS is for external token verification
+            SigilCommand::Jwks { .. } => AclRequirement::None,
+
+            // Schema introspection (shape is not sensitive)
+            SigilCommand::SchemaGet { .. } | SigilCommand::SchemaList => AclRequirement::None,
+
+            // Schema mutation is a structural change → admin
+            SigilCommand::SchemaRegister { .. } => AclRequirement::Admin,
+
+            // Read operations on user data
+            SigilCommand::UserGet { schema, .. } | SigilCommand::SessionList { schema, .. } => {
+                AclRequirement::Namespace {
+                    ns: format!("sigil.{schema}.*"),
+                    scope: Scope::Read,
+                    tenant_override: None,
+                }
+            }
+
+            // Write operations on user data
+            SigilCommand::UserCreate { schema, .. }
+            | SigilCommand::UserImport { schema, .. }
+            | SigilCommand::UserUpdate { schema, .. }
+            | SigilCommand::UserDelete { schema, .. }
+            | SigilCommand::UserVerify { schema, .. }
+            | SigilCommand::SessionCreate { schema, .. }
+            | SigilCommand::SessionRefresh { schema, .. }
+            | SigilCommand::SessionRevoke { schema, .. }
+            | SigilCommand::SessionRevokeAll { schema, .. }
+            | SigilCommand::PasswordChange { schema, .. }
+            | SigilCommand::PasswordReset { schema, .. }
+            | SigilCommand::PasswordImport { schema, .. } => AclRequirement::Namespace {
+                ns: format!("sigil.{schema}.*"),
+                scope: Scope::Write,
+                tenant_override: None,
+            },
+        }
+    }
+}
+
 /// Parse raw RESP3 command arguments into a SigilCommand.
 ///
 /// Arguments come as string slices: `["SCHEMA", "REGISTER", "myapp", "{...}"]`.
@@ -106,6 +159,14 @@ pub fn parse_command(args: &[&str]) -> Result<SigilCommand, String> {
 
     let cmd = args[0].to_uppercase();
     match cmd.as_str() {
+        "AUTH" => {
+            if args.len() < 2 {
+                return Err("AUTH <token>".into());
+            }
+            Ok(SigilCommand::Auth {
+                token: args[1].to_string(),
+            })
+        }
         "SCHEMA" => parse_schema(args),
         "USER" => parse_user(args),
         "SESSION" => parse_session(args),

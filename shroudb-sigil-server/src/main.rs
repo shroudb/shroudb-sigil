@@ -124,15 +124,21 @@ async fn main() -> anyhow::Result<()> {
     // Shutdown signal
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
+    // Auth: no token validator configured yet (dev mode — open access).
+    // Token config wiring follows the same pattern as ShrouDB server:
+    // [auth] section in config with method = "token" and token definitions.
+    let token_validator: Option<Arc<dyn shroudb_acl::TokenValidator>> = None;
+
     // TCP server
     let tcp_listener = tokio::net::TcpListener::bind(cfg.server.tcp_bind)
         .await
         .context("failed to bind TCP")?;
 
     let tcp_engine = engine.clone();
+    let tcp_validator = token_validator.clone();
     let tcp_shutdown = shutdown_rx.clone();
     let tcp_handle = tokio::spawn(async move {
-        tcp::run_tcp(tcp_listener, tcp_engine, tcp_shutdown).await;
+        tcp::run_tcp(tcp_listener, tcp_engine, tcp_validator, tcp_shutdown).await;
     });
 
     // HTTP server
@@ -140,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to bind HTTP")?;
 
-    let http_router = http::router(engine.clone(), http::HttpConfig::default());
+    let http_router = http::router(engine.clone(), token_validator, http::HttpConfig::default());
     let http_handle = tokio::spawn(async move {
         axum::serve(http_listener, http_router)
             .await
