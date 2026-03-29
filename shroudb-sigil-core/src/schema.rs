@@ -9,6 +9,7 @@ use crate::error::SigilError;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Schema {
     /// Schema name (used as namespace prefix: `sigil.{name}.*`).
+    #[serde(default)]
     pub name: String,
     /// Field definitions with type and annotation metadata.
     pub fields: Vec<FieldDef>,

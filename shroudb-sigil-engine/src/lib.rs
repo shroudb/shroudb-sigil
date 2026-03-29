@@ -6,6 +6,7 @@
 
 pub mod capabilities;
 pub mod credential;
+pub mod engine;
 pub mod jwt;
 pub mod schema_registry;
 pub mod session;
