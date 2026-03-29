@@ -115,7 +115,7 @@ impl<S: Store> SchemaRegistry<S> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use shroudb_sigil_core::schema::{FieldAnnotations, FieldDef, FieldType};
 
@@ -243,7 +243,7 @@ mod tests {
     }
 
     /// Create a test Store backed by a real embedded StorageEngine.
-    async fn create_test_store() -> Arc<shroudb_storage::EmbeddedStore> {
+    pub(crate) async fn create_test_store() -> Arc<shroudb_storage::EmbeddedStore> {
         let dir = tempfile::tempdir().unwrap();
         let dir_path = dir.keep();
 
@@ -262,7 +262,7 @@ mod tests {
     }
 
     /// Ephemeral master key for tests.
-    struct EphemeralKey;
+    pub(crate) struct EphemeralKey;
 
     impl shroudb_storage::MasterKeySource for EphemeralKey {
         fn source_name(&self) -> &str {

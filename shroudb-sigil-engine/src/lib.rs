@@ -4,4 +4,5 @@
 //! JWT management, session handling, and field-level crypto routing.
 //! Consumes the ShrouDB Store trait for persistence.
 
+pub mod credential;
 pub mod schema_registry;
