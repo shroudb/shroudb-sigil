@@ -145,6 +145,116 @@ impl<S: Store> WriteCoordinator<S> {
         serde_json::from_slice(&entry.value).map_err(|e| SigilError::Internal(e.to_string()))
     }
 
+    /// Update non-credential fields on an existing user.
+    /// Credential fields cannot be updated through this method — use
+    /// password change/reset instead.
+    pub async fn update_user(
+        &self,
+        schema: &Schema,
+        user_id: &str,
+        fields: &HashMap<String, serde_json::Value>,
+    ) -> Result<UserRecord, SigilError> {
+        let users_ns = users_namespace(&schema.name);
+        let entry = self
+            .store
+            .get(&users_ns, user_id.as_bytes(), None)
+            .await
+            .map_err(|_| SigilError::UserNotFound)?;
+
+        let mut record: UserRecord = serde_json::from_slice(&entry.value)
+            .map_err(|e| SigilError::Internal(e.to_string()))?;
+
+        for (field_name, value) in fields {
+            // Find the field definition in the schema
+            let field_def = schema
+                .fields
+                .iter()
+                .find(|f| f.name == *field_name)
+                .ok_or_else(|| SigilError::InvalidField {
+                    field: field_name.clone(),
+                    reason: "field not in schema".into(),
+                })?;
+
+            let treatment = shroudb_sigil_core::routing::route_field(&field_def.annotations);
+
+            // Reject credential updates through this path
+            if treatment == shroudb_sigil_core::routing::FieldTreatment::Credential {
+                return Err(SigilError::InvalidField {
+                    field: field_name.clone(),
+                    reason:
+                        "credential fields cannot be updated via USER UPDATE; use PASSWORD CHANGE"
+                            .into(),
+                });
+            }
+
+            // For non-credential fields, update the user record value
+            match treatment {
+                shroudb_sigil_core::routing::FieldTreatment::PlaintextIndex
+                | shroudb_sigil_core::routing::FieldTreatment::Inert => {
+                    record.fields.insert(field_name.clone(), value.clone());
+                }
+                shroudb_sigil_core::routing::FieldTreatment::EncryptedPii => {
+                    let cipher = self
+                        .capabilities
+                        .cipher
+                        .as_ref()
+                        .ok_or_else(|| SigilError::CapabilityMissing("cipher".into()))?;
+                    let plaintext = value.as_str().ok_or_else(|| SigilError::InvalidField {
+                        field: field_name.clone(),
+                        reason: "PII field must be a string".into(),
+                    })?;
+                    let ciphertext = cipher.encrypt(plaintext.as_bytes()).await?;
+                    record.fields.insert(
+                        field_name.clone(),
+                        serde_json::json!(hex::encode(&ciphertext)),
+                    );
+                }
+                shroudb_sigil_core::routing::FieldTreatment::SearchableEncrypted => {
+                    let cipher = self
+                        .capabilities
+                        .cipher
+                        .as_ref()
+                        .ok_or_else(|| SigilError::CapabilityMissing("cipher".into()))?;
+                    let veil = self
+                        .capabilities
+                        .veil
+                        .as_ref()
+                        .ok_or_else(|| SigilError::CapabilityMissing("veil".into()))?;
+                    let plaintext = value.as_str().ok_or_else(|| SigilError::InvalidField {
+                        field: field_name.clone(),
+                        reason: "searchable PII field must be a string".into(),
+                    })?;
+                    let ciphertext = cipher.encrypt(plaintext.as_bytes()).await?;
+                    let _blind_index = veil.index(plaintext.as_bytes()).await?;
+                    record.fields.insert(
+                        field_name.clone(),
+                        serde_json::json!(hex::encode(&ciphertext)),
+                    );
+                }
+                shroudb_sigil_core::routing::FieldTreatment::VersionedSecret => {
+                    let keep = self
+                        .capabilities
+                        .keep
+                        .as_ref()
+                        .ok_or_else(|| SigilError::CapabilityMissing("keep".into()))?;
+                    let secret_bytes = value.to_string().into_bytes();
+                    let key = format!("{}/{}/{}", schema.name, user_id, field_name);
+                    keep.store_secret(key.as_bytes(), &secret_bytes).await?;
+                }
+                shroudb_sigil_core::routing::FieldTreatment::Credential => unreachable!(),
+            }
+        }
+
+        record.updated_at = now_secs();
+        let value = serde_json::to_vec(&record).map_err(|e| SigilError::Internal(e.to_string()))?;
+        self.store
+            .put(&users_ns, user_id.as_bytes(), &value, None)
+            .await
+            .map_err(|e| SigilError::Store(e.to_string()))?;
+
+        Ok(record)
+    }
+
     /// Delete a user and all associated data.
     pub async fn delete_user(&self, schema_name: &str, user_id: &str) -> Result<(), SigilError> {
         let users_ns = users_namespace(schema_name);

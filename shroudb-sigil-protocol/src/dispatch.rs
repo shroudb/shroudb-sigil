@@ -41,6 +41,20 @@ pub async fn dispatch<S: Store>(engine: &SigilEngine<S>, cmd: SigilCommand) -> S
             Err(e) => SigilResponse::error(e.to_string()),
         },
 
+        SigilCommand::UserUpdate {
+            schema,
+            user_id,
+            fields,
+        } => match engine.user_update(&schema, &user_id, &fields).await {
+            Ok(record) => SigilResponse::ok(serde_json::json!({
+                "status": "ok",
+                "user_id": record.user_id,
+                "fields": record.fields,
+                "updated_at": record.updated_at,
+            })),
+            Err(e) => SigilResponse::error(e.to_string()),
+        },
+
         SigilCommand::UserGet { schema, user_id } => {
             match engine.user_get(&schema, &user_id).await {
                 Ok(record) => SigilResponse::ok(serde_json::json!({

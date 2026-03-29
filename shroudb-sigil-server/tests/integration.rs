@@ -144,6 +144,56 @@ async fn http_full_auth_lifecycle() {
     let user: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(user["user_id"], "alice");
     assert_eq!(user["fields"]["org"], "acme");
+
+    // Update user (non-credential fields)
+    let resp = client
+        .patch(server.http_url("/sigil/myapp/users/alice"))
+        .json(&serde_json::json!({"fields": {"org": "newcorp", "display_name": "Alice Smith"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let updated: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(updated["fields"]["org"], "newcorp");
+    assert_eq!(updated["fields"]["display_name"], "Alice Smith");
+
+    // Verify update persisted
+    let resp = client
+        .get(server.http_url("/sigil/myapp/users/alice"))
+        .send()
+        .await
+        .unwrap();
+    let user: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(user["fields"]["org"], "newcorp");
+
+    // Attempt to update credential field via PATCH → rejected
+    let resp = client
+        .patch(server.http_url("/sigil/myapp/users/alice"))
+        .json(&serde_json::json!({"fields": {"password": "sneaky"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        400,
+        "credential update via PATCH should be rejected"
+    );
+
+    // Delete user
+    let resp = client
+        .delete(server.http_url("/sigil/myapp/users/alice"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Verify deleted
+    let resp = client
+        .get(server.http_url("/sigil/myapp/users/alice"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
 }
 
 // ═══════════════════════════════════════════════════════════════════════

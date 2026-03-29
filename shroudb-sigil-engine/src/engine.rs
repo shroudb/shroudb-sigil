@@ -122,6 +122,16 @@ impl<S: Store> SigilEngine<S> {
         self.coordinator.get_user(schema_name, user_id).await
     }
 
+    pub async fn user_update(
+        &self,
+        schema_name: &str,
+        user_id: &str,
+        fields: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<UserRecord, SigilError> {
+        let schema = self.schemas.get(schema_name).await?;
+        self.coordinator.update_user(&schema, user_id, fields).await
+    }
+
     pub async fn user_delete(&self, schema_name: &str, user_id: &str) -> Result<(), SigilError> {
         self.coordinator.delete_user(schema_name, user_id).await
     }

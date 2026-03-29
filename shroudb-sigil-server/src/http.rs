@@ -64,6 +64,10 @@ pub fn router(engine: AppState, http_config: HttpConfig) -> Router {
         .route("/sigil/schemas", post(schema_register))
         .route("/sigil/schemas/{name}", get(schema_get))
         .route("/sigil/{schema}/users/{id}", get(user_get))
+        .route(
+            "/sigil/{schema}/users/{id}",
+            axum::routing::patch(user_update),
+        )
         .route("/sigil/{schema}/users/{id}", delete(user_delete))
         .route("/sigil/{schema}/sessions", delete(session_revoke_body))
         .route("/sigil/{schema}/sessions/refresh", post(session_refresh))
@@ -188,6 +192,29 @@ async fn user_get(State(engine): State<AppState>, Path(path): Path<UserPath>) ->
             "user_id": record.user_id,
             "fields": record.fields,
             "created_at": record.created_at,
+            "updated_at": record.updated_at,
+        })),
+        Err(e) => map_err(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct UpdateUserBody {
+    fields: std::collections::HashMap<String, serde_json::Value>,
+}
+
+async fn user_update(
+    State(engine): State<AppState>,
+    Path(path): Path<UserPath>,
+    Json(body): Json<UpdateUserBody>,
+) -> Response {
+    match engine
+        .user_update(&path.schema, &path.id, &body.fields)
+        .await
+    {
+        Ok(record) => ok_json(serde_json::json!({
+            "user_id": record.user_id,
+            "fields": record.fields,
             "updated_at": record.updated_at,
         })),
         Err(e) => map_err(e),
