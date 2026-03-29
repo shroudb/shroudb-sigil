@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use zeroize::Zeroize;
 
 use shroudb_sigil_core::credential::{CredentialRecord, PasswordAlgorithm, PasswordPolicy};
 use shroudb_sigil_core::error::SigilError;
@@ -268,28 +269,33 @@ fn now() -> u64 {
 }
 
 /// Hash a password with Argon2id using default parameters.
+/// The plaintext copy is zeroed after hashing.
 fn hash_argon2id(plaintext: &str) -> Result<String, SigilError> {
+    let mut pw_bytes = plaintext.as_bytes().to_vec();
     let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
-    let hash = Argon2::default()
-        .hash_password(plaintext.as_bytes(), &salt)
-        .map_err(|e| SigilError::Crypto(e.to_string()))?;
-    Ok(hash.to_string())
+    let result = Argon2::default()
+        .hash_password(&pw_bytes, &salt)
+        .map_err(|e| SigilError::Crypto(e.to_string()));
+    pw_bytes.zeroize();
+    Ok(result?.to_string())
 }
 
 /// Verify a password against any supported hash format.
+/// The plaintext copy is zeroed after verification.
 fn verify_password(plaintext: &str, hash: &str) -> Result<bool, SigilError> {
-    // PHC string format (argon2id, argon2i, argon2d, scrypt)
+    let mut pw_bytes = plaintext.as_bytes().to_vec();
+    let result = verify_password_inner(&pw_bytes, hash);
+    pw_bytes.zeroize();
+    result
+}
+
+fn verify_password_inner(pw_bytes: &[u8], hash: &str) -> Result<bool, SigilError> {
     if hash.starts_with("$argon2") || hash.starts_with("$scrypt$") {
         let parsed = PasswordHash::new(hash).map_err(|e| SigilError::Crypto(e.to_string()))?;
-        Ok(Argon2::default()
-            .verify_password(plaintext.as_bytes(), &parsed)
-            .is_ok())
+        Ok(Argon2::default().verify_password(pw_bytes, &parsed).is_ok())
     } else if hash.starts_with("$2b$") || hash.starts_with("$2a$") || hash.starts_with("$2y$") {
-        // bcrypt format
-        Ok(
-            shroudb_crypto::password_verify(plaintext.as_bytes(), hash.as_bytes())
-                .map_err(|e| SigilError::Crypto(e.to_string()))?,
-        )
+        Ok(shroudb_crypto::password_verify(pw_bytes, hash.as_bytes())
+            .map_err(|e| SigilError::Crypto(e.to_string()))?)
     } else {
         Err(SigilError::Crypto(format!(
             "unrecognized hash format: {}",

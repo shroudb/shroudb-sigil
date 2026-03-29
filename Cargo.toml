@@ -56,6 +56,9 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 
+# Security
+zeroize = { version = "1", features = ["derive"] }
+
 # Utilities
 anyhow = "1"
 thiserror = "2"

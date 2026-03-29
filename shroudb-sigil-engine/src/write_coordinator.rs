@@ -188,31 +188,68 @@ impl<S: Store> WriteCoordinator<S> {
             }
 
             FieldTreatment::EncryptedPii => {
-                if !self.capabilities.has_cipher() {
-                    return Err(SigilError::CapabilityMissing("cipher".into()));
-                }
-                // Cipher integration wired in M6
-                Err(SigilError::CapabilityMissing(
-                    "cipher integration not yet available".into(),
-                ))
+                let cipher = self
+                    .capabilities
+                    .cipher
+                    .as_ref()
+                    .ok_or_else(|| SigilError::CapabilityMissing("cipher".into()))?;
+
+                let plaintext = value.as_str().ok_or_else(|| SigilError::InvalidField {
+                    field: field_name.to_string(),
+                    reason: "PII field must be a string".into(),
+                })?;
+
+                let ciphertext = cipher.encrypt(plaintext.as_bytes()).await?;
+                let encoded = hex::encode(&ciphertext);
+
+                Ok(FieldWriteResult {
+                    compensating_op: None,
+                    user_record_value: Some(serde_json::json!(encoded)),
+                })
             }
 
             FieldTreatment::SearchableEncrypted => {
-                if !self.capabilities.has_cipher() || !self.capabilities.has_veil() {
-                    return Err(SigilError::CapabilityMissing("cipher+veil".into()));
-                }
-                Err(SigilError::CapabilityMissing(
-                    "cipher+veil integration not yet available".into(),
-                ))
+                let cipher = self
+                    .capabilities
+                    .cipher
+                    .as_ref()
+                    .ok_or_else(|| SigilError::CapabilityMissing("cipher".into()))?;
+                let veil = self
+                    .capabilities
+                    .veil
+                    .as_ref()
+                    .ok_or_else(|| SigilError::CapabilityMissing("veil".into()))?;
+
+                let plaintext = value.as_str().ok_or_else(|| SigilError::InvalidField {
+                    field: field_name.to_string(),
+                    reason: "searchable PII field must be a string".into(),
+                })?;
+
+                let ciphertext = cipher.encrypt(plaintext.as_bytes()).await?;
+                let _blind_index = veil.index(plaintext.as_bytes()).await?;
+                let encoded = hex::encode(&ciphertext);
+
+                Ok(FieldWriteResult {
+                    compensating_op: None,
+                    user_record_value: Some(serde_json::json!(encoded)),
+                })
             }
 
             FieldTreatment::VersionedSecret => {
-                if !self.capabilities.has_keep() {
-                    return Err(SigilError::CapabilityMissing("keep".into()));
-                }
-                Err(SigilError::CapabilityMissing(
-                    "keep integration not yet available".into(),
-                ))
+                let keep = self
+                    .capabilities
+                    .keep
+                    .as_ref()
+                    .ok_or_else(|| SigilError::CapabilityMissing("keep".into()))?;
+
+                let secret_bytes = value.to_string().into_bytes();
+                let key = format!("{schema_name}/{user_id}/{field_name}");
+                keep.store_secret(key.as_bytes(), &secret_bytes).await?;
+
+                Ok(FieldWriteResult {
+                    compensating_op: None,
+                    user_record_value: None,
+                })
             }
 
             FieldTreatment::PlaintextIndex | FieldTreatment::Inert => {

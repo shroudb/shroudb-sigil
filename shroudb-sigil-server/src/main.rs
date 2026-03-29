@@ -1,5 +1,8 @@
 mod config;
+mod cors;
+mod csrf;
 mod http;
+mod rate_limit;
 mod tcp;
 
 use std::sync::Arc;
@@ -62,11 +65,8 @@ async fn main() -> anyhow::Result<()> {
         .json()
         .init();
 
-    // Disable core dumps on Linux
-    #[cfg(target_os = "linux")]
-    unsafe {
-        libc::prctl(libc::PR_SET_DUMPABLE, 0);
-    }
+    // Disable core dumps — sensitive key material must not leak to disk.
+    disable_core_dumps();
 
     // CLI overrides
     if let Some(ref dir) = cli.data_dir {
@@ -140,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to bind HTTP")?;
 
-    let http_router = http::router(engine.clone());
+    let http_router = http::router(engine.clone(), http::HttpConfig::default());
     let http_handle = tokio::spawn(async move {
         axum::serve(http_listener, http_router)
             .await
@@ -187,6 +187,27 @@ fn parse_jwt_algorithm(s: &str) -> anyhow::Result<JwtAlgorithm> {
         "RS512" => Ok(JwtAlgorithm::RS512),
         "EDDSA" => Ok(JwtAlgorithm::EdDSA),
         _ => anyhow::bail!("unsupported JWT algorithm: {s}"),
+    }
+}
+
+/// Disable core dumps so sensitive key material cannot leak to disk.
+fn disable_core_dumps() {
+    #[cfg(target_os = "linux")]
+    {
+        if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) } != 0 {
+            tracing::warn!("failed to disable core dumps via prctl");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let zero = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &zero) } != 0 {
+            tracing::warn!("failed to disable core dumps via setrlimit");
+        }
     }
 }
 

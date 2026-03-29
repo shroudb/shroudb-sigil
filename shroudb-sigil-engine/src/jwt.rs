@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use shroudb_crypto::{JwtAlgorithm, generate_signing_key, public_key_to_jwk, sign_jwt, verify_jwt};
+use zeroize::Zeroize;
 
 use shroudb_sigil_core::error::SigilError;
 use shroudb_store::Store;
@@ -18,6 +19,7 @@ pub enum KeyState {
 }
 
 /// A signing key record stored in `sigil.{schema}.keys`.
+/// Private key material is zeroed on drop.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SigningKeyRecord {
     pub key_id: String,
@@ -26,6 +28,12 @@ pub struct SigningKeyRecord {
     pub private_key_pkcs8: Vec<u8>,
     pub public_key_der: Vec<u8>,
     pub created_at: u64,
+}
+
+impl Drop for SigningKeyRecord {
+    fn drop(&mut self) {
+        self.private_key_pkcs8.zeroize();
+    }
 }
 
 /// Manages JWT signing keys and token operations.
@@ -78,7 +86,7 @@ impl<S: Store> JwtManager<S> {
     /// Ensure at least one active key exists. Creates one if needed.
     pub async fn ensure_active_key(&self, schema: &str) -> Result<String, SigilError> {
         if let Ok(key) = self.get_active_key(schema).await {
-            return Ok(key.key_id);
+            return Ok(key.key_id.clone());
         }
         self.create_key(schema).await
     }

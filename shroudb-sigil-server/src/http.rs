@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -9,33 +10,73 @@ use axum::{Json, Router};
 use shroudb_sigil_engine::engine::SigilEngine;
 use shroudb_storage::EmbeddedStore;
 
+use crate::cors;
+use crate::csrf::{CsrfConfig, csrf_middleware};
+use crate::rate_limit::{RateLimitConfig, RateLimitState, rate_limit_middleware};
+
 type AppState = Arc<SigilEngine<EmbeddedStore>>;
 
-pub fn router(engine: AppState) -> Router {
-    Router::new()
-        // Schema
-        .route("/sigil/schemas", post(schema_register))
-        .route("/sigil/schemas/{name}", get(schema_get))
-        // User
+/// HTTP router configuration.
+pub struct HttpConfig {
+    pub cors_origins: Vec<String>,
+    pub rate_limit_burst: f64,
+    pub rate_limit_per_sec: f64,
+    pub trust_xff: bool,
+}
+
+impl Default for HttpConfig {
+    fn default() -> Self {
+        Self {
+            cors_origins: vec!["*".to_string()],
+            rate_limit_burst: 10.0,
+            rate_limit_per_sec: 2.0,
+            trust_xff: false,
+        }
+    }
+}
+
+pub fn router(engine: AppState, http_config: HttpConfig) -> Router {
+    let csrf_config = CsrfConfig::new(&http_config.cors_origins);
+    let rate_state = RateLimitState::new(
+        RateLimitConfig {
+            max_tokens: http_config.rate_limit_burst,
+            refill_rate: http_config.rate_limit_per_sec,
+        },
+        http_config.trust_xff,
+    );
+
+    // Rate-limited routes (expensive argon2 + credential stuffing targets)
+    let rate_limited = Router::new()
         .route("/sigil/{schema}/users", post(user_create))
-        .route("/sigil/{schema}/users/{id}", get(user_get))
-        .route("/sigil/{schema}/users/{id}", delete(user_delete))
-        // Verify
         .route("/sigil/{schema}/verify", post(verify))
-        // Sessions
         .route("/sigil/{schema}/sessions", post(session_create))
-        .route("/sigil/{schema}/sessions", delete(session_revoke_body))
-        .route("/sigil/{schema}/sessions/refresh", post(session_refresh))
-        .route("/sigil/{schema}/sessions/{user_id}", get(session_list))
-        // Password
         .route("/sigil/{schema}/password/change", post(password_change))
         .route("/sigil/{schema}/password/reset", post(password_reset))
         .route("/sigil/{schema}/password/import", post(password_import))
-        // JWT
+        .route_layer(middleware::from_fn_with_state(
+            rate_state,
+            rate_limit_middleware,
+        ))
+        .with_state(engine.clone());
+
+    // Non-rate-limited routes
+    let open = Router::new()
+        .route("/sigil/schemas", post(schema_register))
+        .route("/sigil/schemas/{name}", get(schema_get))
+        .route("/sigil/{schema}/users/{id}", get(user_get))
+        .route("/sigil/{schema}/users/{id}", delete(user_delete))
+        .route("/sigil/{schema}/sessions", delete(session_revoke_body))
+        .route("/sigil/{schema}/sessions/refresh", post(session_refresh))
+        .route("/sigil/{schema}/sessions/{user_id}", get(session_list))
         .route("/sigil/{schema}/.well-known/jwks.json", get(jwks))
-        // Health
         .route("/sigil/health", get(health))
-        .with_state(engine)
+        .with_state(engine);
+
+    Router::new()
+        .merge(rate_limited)
+        .merge(open)
+        .layer(middleware::from_fn_with_state(csrf_config, csrf_middleware))
+        .layer(cors::cors_layer(&http_config.cors_origins))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────

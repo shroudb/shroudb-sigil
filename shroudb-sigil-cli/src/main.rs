@@ -1,3 +1,4 @@
 fn main() {
-    println!("shroudb-sigil-cli — not yet implemented");
+    eprintln!("error: shroudb-sigil-cli is not yet implemented");
+    std::process::exit(1);
 }
