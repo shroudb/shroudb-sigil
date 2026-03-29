@@ -160,6 +160,31 @@ impl<S: Store> WriteCoordinator<S> {
         Ok(user_record)
     }
 
+    /// Look up a user_id by searching a field value via Veil blind index.
+    pub async fn lookup_by_field(
+        &self,
+        field_name: &str,
+        field_value: &str,
+    ) -> Result<String, SigilError> {
+        let veil = self
+            .capabilities
+            .veil
+            .as_ref()
+            .ok_or_else(|| SigilError::CapabilityMissing("veil".into()))?;
+
+        let results: Vec<(String, f64)> =
+            veil.search(field_value, Some(field_name), Some(1)).await?;
+
+        let (entry_id, _score) = results.into_iter().next().ok_or(SigilError::UserNotFound)?;
+
+        // Entry ID format: "{user_id}/{field_name}"
+        entry_id
+            .split('/')
+            .next()
+            .map(String::from)
+            .ok_or_else(|| SigilError::Internal("malformed veil entry id".into()))
+    }
+
     /// Get a user record, decrypting PII fields if Cipher is available.
     pub async fn get_user(&self, schema: &Schema, user_id: &str) -> Result<UserRecord, SigilError> {
         let ns = users_namespace(&schema.name);

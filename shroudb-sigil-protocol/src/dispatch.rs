@@ -121,6 +121,18 @@ pub async fn dispatch<S: Store>(
             Err(e) => SigilResponse::error(e.to_string()),
         },
 
+        SigilCommand::UserLookup {
+            schema,
+            field_name,
+            field_value,
+        } => match engine.user_lookup(&schema, &field_name, &field_value).await {
+            Ok(user_id) => SigilResponse::ok(serde_json::json!({
+                "status": "ok",
+                "user_id": user_id,
+            })),
+            Err(e) => SigilResponse::error(e.to_string()),
+        },
+
         // ── Session ─────────────────────────────────────────────────
         SigilCommand::SessionCreate {
             schema,
@@ -130,6 +142,33 @@ pub async fn dispatch<S: Store>(
         } => {
             match engine
                 .session_create(&schema, &user_id, &password, metadata.as_ref())
+                .await
+            {
+                Ok(pair) => SigilResponse::ok(serde_json::json!({
+                    "status": "ok",
+                    "access_token": pair.access_token,
+                    "refresh_token": pair.refresh_token,
+                    "expires_in": pair.expires_in,
+                })),
+                Err(e) => SigilResponse::error(e.to_string()),
+            }
+        }
+
+        SigilCommand::SessionCreateByField {
+            schema,
+            field_name,
+            field_value,
+            password,
+            metadata,
+        } => {
+            match engine
+                .session_create_by_field(
+                    &schema,
+                    &field_name,
+                    &field_value,
+                    &password,
+                    metadata.as_ref(),
+                )
                 .await
             {
                 Ok(pair) => SigilResponse::ok(serde_json::json!({

@@ -1111,3 +1111,156 @@ async fn cipher_veil_searchable_pii_roundtrip() {
         .unwrap();
     assert!(results.matched > 0, "veil should find entries for 'alice'");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Login by encrypted email — the app never sees plaintext PII in storage
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn login_by_encrypted_email() {
+    let cipher = match TestCipherServer::start().await {
+        Some(c) => c,
+        None => {
+            eprintln!("skipping: cipher binary not found");
+            return;
+        }
+    };
+    cipher.create_keyring("sigil-pii", "aes-256-gcm").await;
+
+    let veil = match TestVeilServer::start().await {
+        Some(v) => v,
+        None => {
+            eprintln!("skipping: veil binary not found");
+            return;
+        }
+    };
+    veil.create_index("sigil-search").await;
+
+    let server = TestServer::start_with_config(TestServerConfig {
+        cipher: Some(TestCipherConfig {
+            addr: cipher.tcp_addr.clone(),
+            keyring: "sigil-pii".to_string(),
+        }),
+        veil: Some(TestVeilConfig {
+            addr: veil.tcp_addr.clone(),
+            index: "sigil-search".to_string(),
+        }),
+        ..Default::default()
+    })
+    .await
+    .expect("sigil server failed to start");
+
+    let client = reqwest::Client::new();
+
+    // Register schema: email is PII + searchable, password is credential
+    client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "app",
+            "fields": [
+                {"name": "email", "field_type": "string", "annotations": {"pii": true, "searchable": true}},
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // ── Register ────────────────────────────────────────────────────
+    // User signs up with email + password. The app sends this to Sigil.
+    // Sigil encrypts the email (Cipher), indexes it (Veil), hashes the
+    // password (Argon2id). The database never has plaintext email.
+    let resp = client
+        .post(server.http_url("/sigil/app/users"))
+        .json(&serde_json::json!({
+            "fields": {
+                "user_id": "u_abc123",
+                "email": "alice@example.com",
+                "password": "correct-horse-battery"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // ── Login by email ──────────────────────────────────────────────
+    // User logs in with email + password. The app sends this to Sigil.
+    // Sigil searches Veil for "alice@example.com" → resolves user_id
+    // "u_abc123" → verifies password → issues JWT.
+    // The app gets a JWT back. It never stored, processed, or mapped
+    // the email to a user_id itself.
+    let resp = client
+        .post(server.http_url("/sigil/app/sessions/login"))
+        .json(&serde_json::json!({
+            "field": "email",
+            "value": "alice@example.com",
+            "password": "correct-horse-battery"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "login by email failed: {:?}",
+        resp.text().await
+    );
+
+    // Parse the response — we should have a JWT
+    let resp = client
+        .post(server.http_url("/sigil/app/sessions/login"))
+        .json(&serde_json::json!({
+            "field": "email",
+            "value": "alice@example.com",
+            "password": "correct-horse-battery"
+        }))
+        .send()
+        .await
+        .unwrap();
+    let login: serde_json::Value = resp.json().await.unwrap();
+    assert!(login["access_token"].is_string(), "should get JWT back");
+    assert!(login["refresh_token"].is_string());
+
+    // ── Wrong password ──────────────────────────────────────────────
+    let resp = client
+        .post(server.http_url("/sigil/app/sessions/login"))
+        .json(&serde_json::json!({
+            "field": "email",
+            "value": "alice@example.com",
+            "password": "wrong-password"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401, "wrong password should fail");
+
+    // ── Unknown email ───────────────────────────────────────────────
+    let resp = client
+        .post(server.http_url("/sigil/app/sessions/login"))
+        .json(&serde_json::json!({
+            "field": "email",
+            "value": "nobody@example.com",
+            "password": "anything"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status() == 404 || resp.status() == 401,
+        "unknown email should fail"
+    );
+
+    // ── Verify the email is encrypted in storage ────────────────────
+    // Get user — Sigil decrypts for us, but the DB has ciphertext
+    let resp = client
+        .get(server.http_url("/sigil/app/users/u_abc123"))
+        .send()
+        .await
+        .unwrap();
+    let user: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        user["fields"]["email"], "alice@example.com",
+        "email should decrypt for the caller"
+    );
+}

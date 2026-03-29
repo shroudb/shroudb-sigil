@@ -49,11 +49,23 @@ pub enum SigilCommand {
         user_id: String,
         password: String,
     },
+    UserLookup {
+        schema: String,
+        field_name: String,
+        field_value: String,
+    },
 
     // Session
     SessionCreate {
         schema: String,
         user_id: String,
+        password: String,
+        metadata: Option<serde_json::Value>,
+    },
+    SessionCreateByField {
+        schema: String,
+        field_name: String,
+        field_value: String,
         password: String,
         metadata: Option<serde_json::Value>,
     },
@@ -120,13 +132,13 @@ impl SigilCommand {
             SigilCommand::SchemaRegister { .. } => AclRequirement::Admin,
 
             // Read operations on user data
-            SigilCommand::UserGet { schema, .. } | SigilCommand::SessionList { schema, .. } => {
-                AclRequirement::Namespace {
-                    ns: format!("sigil.{schema}.*"),
-                    scope: Scope::Read,
-                    tenant_override: None,
-                }
-            }
+            SigilCommand::UserGet { schema, .. }
+            | SigilCommand::UserLookup { schema, .. }
+            | SigilCommand::SessionList { schema, .. } => AclRequirement::Namespace {
+                ns: format!("sigil.{schema}.*"),
+                scope: Scope::Read,
+                tenant_override: None,
+            },
 
             // Write operations on user data
             SigilCommand::UserCreate { schema, .. }
@@ -135,6 +147,7 @@ impl SigilCommand {
             | SigilCommand::UserDelete { schema, .. }
             | SigilCommand::UserVerify { schema, .. }
             | SigilCommand::SessionCreate { schema, .. }
+            | SigilCommand::SessionCreateByField { schema, .. }
             | SigilCommand::SessionRefresh { schema, .. }
             | SigilCommand::SessionRevoke { schema, .. }
             | SigilCommand::SessionRevokeAll { schema, .. }
@@ -231,6 +244,16 @@ fn parse_user(args: &[&str]) -> Result<SigilCommand, String> {
                 user_id: args[3].to_string(),
             })
         }
+        "LOOKUP" => {
+            if args.len() < 5 {
+                return Err("USER LOOKUP <schema> <field> <value>".into());
+            }
+            Ok(SigilCommand::UserLookup {
+                schema: args[2].to_string(),
+                field_name: args[3].to_string(),
+                field_value: args[4].to_string(),
+            })
+        }
         "IMPORT" => {
             if args.len() < 5 {
                 return Err("USER IMPORT <schema> <id> <json>".into());
@@ -295,6 +318,25 @@ fn parse_session(args: &[&str]) -> Result<SigilCommand, String> {
                 schema: args[2].to_string(),
                 user_id: args[3].to_string(),
                 password: args[4].to_string(),
+                metadata,
+            })
+        }
+        "LOGIN" => {
+            // SESSION LOGIN <schema> <field> <value> <password> [META <json>]
+            if args.len() < 6 {
+                return Err(
+                    "SESSION LOGIN <schema> <field> <value> <password> [META <json>]".into(),
+                );
+            }
+            let metadata = find_option(args, "META")
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|e| format!("invalid META JSON: {e}"))?;
+            Ok(SigilCommand::SessionCreateByField {
+                schema: args[2].to_string(),
+                field_name: args[3].to_string(),
+                field_value: args[4].to_string(),
+                password: args[5].to_string(),
                 metadata,
             })
         }

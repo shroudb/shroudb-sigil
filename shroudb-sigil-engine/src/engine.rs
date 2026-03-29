@@ -158,6 +158,37 @@ impl<S: Store> SigilEngine<S> {
 
     // ── Session operations ──────────────────────────────────────────
 
+    /// Look up a user by a searchable field value via Veil.
+    /// Returns the user_id if found.
+    pub async fn user_lookup(
+        &self,
+        _schema_name: &str,
+        field_name: &str,
+        field_value: &str,
+    ) -> Result<String, SigilError> {
+        self.coordinator
+            .lookup_by_field(field_name, field_value)
+            .await
+    }
+
+    /// Login by searchable field (e.g., email) instead of user_id.
+    /// Resolves the user via Veil blind search, then verifies credentials.
+    pub async fn session_create_by_field(
+        &self,
+        schema_name: &str,
+        field_name: &str,
+        field_value: &str,
+        password: &str,
+        extra_claims: Option<&serde_json::Value>,
+    ) -> Result<TokenPair, SigilError> {
+        let user_id = self
+            .user_lookup(schema_name, field_name, field_value)
+            .await?;
+
+        self.session_create(schema_name, &user_id, password, extra_claims)
+            .await
+    }
+
     pub async fn session_create(
         &self,
         schema_name: &str,

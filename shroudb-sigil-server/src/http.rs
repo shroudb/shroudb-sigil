@@ -66,7 +66,9 @@ pub fn router(
         .route("/sigil/{schema}/users", post(user_create))
         .route("/sigil/{schema}/users/import", post(user_import))
         .route("/sigil/{schema}/verify", post(verify))
+        .route("/sigil/{schema}/lookup", post(user_lookup))
         .route("/sigil/{schema}/sessions", post(session_create))
+        .route("/sigil/{schema}/sessions/login", post(session_login))
         .route("/sigil/{schema}/password/change", post(password_change))
         .route("/sigil/{schema}/password/reset", post(password_reset))
         .route("/sigil/{schema}/password/import", post(password_import))
@@ -357,6 +359,57 @@ async fn verify(
         schema,
         user_id: body.user_id,
         password: body.password,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct LookupBody {
+    field: String,
+    value: String,
+}
+
+async fn user_lookup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(schema): Path<String>,
+    Json(body): Json<LookupBody>,
+) -> Response {
+    let cmd = SigilCommand::UserLookup {
+        schema,
+        field_name: body.field,
+        field_value: body.value,
+    };
+    match run_command(&state, &headers, cmd).await {
+        Ok(resp) => sigil_to_http(resp, StatusCode::OK),
+        Err(r) => r,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct FieldLoginBody {
+    field: String,
+    value: String,
+    password: String,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+}
+
+async fn session_login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(schema): Path<String>,
+    Json(body): Json<FieldLoginBody>,
+) -> Response {
+    let cmd = SigilCommand::SessionCreateByField {
+        schema,
+        field_name: body.field,
+        field_value: body.value,
+        password: body.password,
+        metadata: body.metadata,
     };
     match run_command(&state, &headers, cmd).await {
         Ok(resp) => sigil_to_http(resp, StatusCode::OK),
