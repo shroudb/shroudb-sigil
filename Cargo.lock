@@ -2123,7 +2123,6 @@ version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
- "shroudb-sigil-core",
  "thiserror",
  "tokio",
 ]
