@@ -1,6 +1,6 @@
 mod common;
 
-use common::TestServer;
+use common::*;
 use std::time::Duration;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -633,4 +633,258 @@ async fn read_response(
     }
 
     first_line.to_string()
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ACL: Token-based auth
+// ═══════════════════════════════════════════════════════════════════════
+
+fn auth_server_config() -> TestServerConfig {
+    TestServerConfig {
+        tokens: vec![
+            TestToken {
+                raw: "admin-token".to_string(),
+                tenant: "tenant-a".to_string(),
+                actor: "admin".to_string(),
+                platform: true,
+                grants: vec![],
+            },
+            TestToken {
+                raw: "app-token".to_string(),
+                tenant: "tenant-a".to_string(),
+                actor: "my-app".to_string(),
+                platform: false,
+                grants: vec![TestGrant {
+                    namespace: "sigil.myapp.*".to_string(),
+                    scopes: vec!["read".to_string(), "write".to_string()],
+                }],
+            },
+            TestToken {
+                raw: "readonly-token".to_string(),
+                tenant: "tenant-a".to_string(),
+                actor: "reader".to_string(),
+                platform: false,
+                grants: vec![TestGrant {
+                    namespace: "sigil.myapp.*".to_string(),
+                    scopes: vec!["read".to_string()],
+                }],
+            },
+        ],
+    }
+}
+
+#[tokio::test]
+async fn acl_unauthenticated_rejected_for_protected_routes() {
+    let server = TestServer::start_with_config(auth_server_config())
+        .await
+        .expect("server failed to start");
+    let client = reqwest::Client::new();
+
+    // Health is public — should work without auth
+    let resp = client
+        .get(server.http_url("/sigil/health"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // SCHEMA REGISTER requires Admin — should fail without auth
+    let resp = client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "test",
+            "fields": [{"name": "f", "field_type": "string"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        401,
+        "unauthenticated schema register should be rejected"
+    );
+
+    // USER CREATE requires Write — should fail without auth
+    let resp = client
+        .post(server.http_url("/sigil/myapp/users"))
+        .json(&serde_json::json!({"fields": {"user_id": "x", "f": "v"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn acl_valid_admin_token_accepted() {
+    let server = TestServer::start_with_config(auth_server_config())
+        .await
+        .expect("server failed to start");
+    let client = reqwest::Client::new();
+
+    // Admin token can register schemas
+    let resp = client
+        .post(server.http_url("/sigil/schemas"))
+        .header("Authorization", "Bearer admin-token")
+        .json(&serde_json::json!({
+            "name": "myapp",
+            "fields": [
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+                {"name": "org", "field_type": "string", "annotations": {"index": true}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Admin token can create users
+    let resp = client
+        .post(server.http_url("/sigil/myapp/users"))
+        .header("Authorization", "Bearer admin-token")
+        .json(&serde_json::json!({"fields": {"user_id": "alice", "password": "test12345678", "org": "acme"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+}
+
+#[tokio::test]
+async fn acl_wrong_token_rejected() {
+    let server = TestServer::start_with_config(auth_server_config())
+        .await
+        .expect("server failed to start");
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(server.http_url("/sigil/schemas"))
+        .header("Authorization", "Bearer totally-wrong-token")
+        .json(&serde_json::json!({
+            "name": "test",
+            "fields": [{"name": "f", "field_type": "string"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn acl_non_admin_cannot_register_schema() {
+    let server = TestServer::start_with_config(auth_server_config())
+        .await
+        .expect("server failed to start");
+    let client = reqwest::Client::new();
+
+    // app-token has namespace grants but is not platform — cannot do Admin ops
+    let resp = client
+        .post(server.http_url("/sigil/schemas"))
+        .header("Authorization", "Bearer app-token")
+        .json(&serde_json::json!({
+            "name": "myapp",
+            "fields": [{"name": "f", "field_type": "string"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "non-admin should get 403 forbidden");
+}
+
+#[tokio::test]
+async fn acl_read_only_cannot_write() {
+    let server = TestServer::start_with_config(auth_server_config())
+        .await
+        .expect("server failed to start");
+    let client = reqwest::Client::new();
+
+    // Setup: admin registers schema + creates user
+    client
+        .post(server.http_url("/sigil/schemas"))
+        .header("Authorization", "Bearer admin-token")
+        .json(&serde_json::json!({
+            "name": "myapp",
+            "fields": [
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+                {"name": "org", "field_type": "string", "annotations": {"index": true}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .post(server.http_url("/sigil/myapp/users"))
+        .header("Authorization", "Bearer admin-token")
+        .json(&serde_json::json!({"fields": {"user_id": "bob", "password": "test12345678", "org": "acme"}}))
+        .send()
+        .await
+        .unwrap();
+
+    // Read-only token can GET user
+    let resp = client
+        .get(server.http_url("/sigil/myapp/users/bob"))
+        .header("Authorization", "Bearer readonly-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "read token should be able to GET user");
+
+    // Read-only token CANNOT create users (Write scope required)
+    let resp = client
+        .post(server.http_url("/sigil/myapp/users"))
+        .header("Authorization", "Bearer readonly-token")
+        .json(&serde_json::json!({"fields": {"user_id": "x", "password": "test12345678", "org": "x"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "read-only token should not create users"
+    );
+
+    // Read-only token CANNOT verify (Write scope required)
+    let resp = client
+        .post(server.http_url("/sigil/myapp/verify"))
+        .header("Authorization", "Bearer readonly-token")
+        .json(&serde_json::json!({"user_id": "bob", "password": "test12345678"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "read-only token should not verify");
+}
+
+#[tokio::test]
+async fn acl_jwks_is_public_even_with_auth() {
+    let server = TestServer::start_with_config(auth_server_config())
+        .await
+        .expect("server failed to start");
+    let client = reqwest::Client::new();
+
+    // Setup schema with admin
+    client
+        .post(server.http_url("/sigil/schemas"))
+        .header("Authorization", "Bearer admin-token")
+        .json(&serde_json::json!({
+            "name": "myapp",
+            "fields": [{"name": "password", "field_type": "string", "annotations": {"credential": true}}]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // JWKS should be accessible without auth
+    let resp = client
+        .get(server.http_url("/sigil/myapp/.well-known/jwks.json"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "JWKS should be public");
+
+    // SCHEMA GET should also be public
+    let resp = client
+        .get(server.http_url("/sigil/schemas/myapp"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "SCHEMA GET should be public");
 }

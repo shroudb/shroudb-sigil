@@ -124,10 +124,11 @@ async fn main() -> anyhow::Result<()> {
     // Shutdown signal
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // Auth: no token validator configured yet (dev mode — open access).
-    // Token config wiring follows the same pattern as ShrouDB server:
-    // [auth] section in config with method = "token" and token definitions.
-    let token_validator: Option<Arc<dyn shroudb_acl::TokenValidator>> = None;
+    // Auth: build token validator from config
+    let token_validator = config::build_token_validator(&cfg.auth);
+    if token_validator.is_some() {
+        tracing::info!(tokens = cfg.auth.tokens.len(), "token-based auth enabled");
+    }
 
     // TCP server
     let tcp_listener = tokio::net::TcpListener::bind(cfg.server.tcp_bind)
