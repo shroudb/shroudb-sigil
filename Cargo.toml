@@ -1,0 +1,62 @@
+[workspace]
+resolver = "3"
+default-members = ["shroudb-sigil-server"]
+members = [
+    "shroudb-sigil-core",
+    "shroudb-sigil-engine",
+    "shroudb-sigil-protocol",
+    "shroudb-sigil-server",
+    "shroudb-sigil-client",
+    "shroudb-sigil-cli",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+publish = ["shroudb"]
+
+[workspace.dependencies]
+# Internal crates
+shroudb-sigil-core = { path = "shroudb-sigil-core", version = "1.0.0" }
+shroudb-sigil-engine = { path = "shroudb-sigil-engine", version = "1.0.0" }
+shroudb-sigil-protocol = { path = "shroudb-sigil-protocol", version = "1.0.0" }
+shroudb-sigil-client = { path = "shroudb-sigil-client", version = "1.0.0" }
+
+# ShrouDB commons (shroudb registry)
+shroudb-store = { version = "0.1.2", registry = "shroudb" }
+shroudb-storage = { version = "0.2.11", registry = "shroudb" }
+shroudb-crypto = { version = "0.1.0", registry = "shroudb" }
+
+# Crypto
+argon2 = "0.5"
+ring = "0.17"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = { version = "1", features = ["alloc"] }
+toml = "1"
+
+# Web
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
+
+# Utilities
+anyhow = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+hex = "0.4"

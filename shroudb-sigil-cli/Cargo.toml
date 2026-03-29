@@ -1,0 +1,20 @@
+[package]
+name = "shroudb-sigil-cli"
+description = "CLI tool for the Sigil credential envelope engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "shroudb-sigil-cli"
+path = "src/main.rs"
+
+[dependencies]
+shroudb-sigil-client.workspace = true
+
+tokio.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true

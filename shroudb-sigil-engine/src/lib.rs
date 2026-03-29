@@ -1,0 +1,5 @@
+//! Store-backed credential envelope engine.
+//!
+//! This is the core Sigil engine — schema registry, credential lifecycle,
+//! JWT management, session handling, and field-level crypto routing.
+//! Consumes the ShrouDB Store trait for persistence.
