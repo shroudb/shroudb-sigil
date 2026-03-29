@@ -25,6 +25,90 @@ fn find_binary() -> Option<PathBuf> {
 pub struct TestServerConfig {
     /// Auth tokens. Empty = auth disabled.
     pub tokens: Vec<TestToken>,
+    /// Cipher server connection. None = no cipher.
+    pub cipher: Option<TestCipherConfig>,
+}
+
+pub struct TestCipherConfig {
+    pub addr: String,
+    pub keyring: String,
+}
+
+/// A running Cipher test server. Killed on drop.
+pub struct TestCipherServer {
+    child: Child,
+    pub tcp_addr: String,
+    _data_dir: tempfile::TempDir,
+}
+
+impl TestCipherServer {
+    pub async fn start() -> Option<Self> {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let candidates = [
+            PathBuf::from(manifest_dir).join("../../shroudb-cipher/target/debug/shroudb-cipher"),
+            PathBuf::from(manifest_dir).join("../shroudb-cipher/target/debug/shroudb-cipher"),
+        ];
+        let binary = candidates.into_iter().find(|p| p.exists())?;
+
+        let tcp_port = free_port();
+        let tcp_addr = format!("127.0.0.1:{tcp_port}");
+        let data_dir = tempfile::tempdir().ok()?;
+
+        let child = Command::new(&binary)
+            .arg("--tcp-bind")
+            .arg(&tcp_addr)
+            .arg("--data-dir")
+            .arg(data_dir.path())
+            .arg("--log-level")
+            .arg("warn")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .ok()?;
+
+        let mut server = Self {
+            child,
+            tcp_addr: tcp_addr.clone(),
+            _data_dir: data_dir,
+        };
+
+        // Wait for TCP to be ready
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if tokio::time::Instant::now() > deadline {
+                eprintln!("cipher server failed to start");
+                return None;
+            }
+            if let Some(status) = server.child.try_wait().ok().flatten() {
+                eprintln!("cipher server exited during startup: {status}");
+                return None;
+            }
+            if tokio::net::TcpStream::connect(&tcp_addr).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        Some(server)
+    }
+
+    /// Create a keyring on the Cipher server for testing.
+    pub async fn create_keyring(&self, name: &str, algorithm: &str) {
+        let mut client = shroudb_cipher_client::CipherClient::connect(&self.tcp_addr)
+            .await
+            .unwrap();
+        client
+            .keyring_create(name, algorithm, None, None, false)
+            .await
+            .unwrap();
+    }
+}
+
+impl Drop for TestCipherServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 pub struct TestToken {
@@ -153,6 +237,13 @@ mode = "embedded"
             }
             toml.push('\n');
         }
+    }
+
+    if let Some(ref cipher) = config.cipher {
+        toml.push_str(&format!(
+            "\n[cipher]\naddr = \"{}\"\nkeyring = \"{}\"\n",
+            cipher.addr, cipher.keyring
+        ));
     }
 
     toml

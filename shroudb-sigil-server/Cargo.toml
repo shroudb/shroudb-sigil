@@ -40,5 +40,6 @@ libc = "0.2"
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json", "cookies"] }
+shroudb-cipher-client.workspace = true
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"

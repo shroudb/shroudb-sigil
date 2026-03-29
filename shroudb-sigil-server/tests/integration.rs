@@ -670,6 +670,7 @@ fn auth_server_config() -> TestServerConfig {
                 }],
             },
         ],
+        cipher: None,
     }
 }
 
@@ -887,4 +888,124 @@ async fn acl_jwks_is_public_even_with_auth() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200, "SCHEMA GET should be public");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Cipher integration: PII field encryption roundtrip
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
+    // Start Cipher server
+    let cipher = match TestCipherServer::start().await {
+        Some(c) => c,
+        None => {
+            eprintln!("skipping cipher test: cipher binary not found");
+            return;
+        }
+    };
+
+    // Create a keyring for PII
+    cipher.create_keyring("sigil-pii", "aes-256-gcm").await;
+
+    // Start Sigil server with Cipher connected
+    let server = TestServer::start_with_config(TestServerConfig {
+        cipher: Some(TestCipherConfig {
+            addr: cipher.tcp_addr.clone(),
+            keyring: "sigil-pii".to_string(),
+        }),
+        ..Default::default()
+    })
+    .await
+    .expect("sigil server failed to start with cipher");
+
+    let client = reqwest::Client::new();
+
+    // Register schema with PII field
+    let resp = client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "pii-test",
+            "fields": [
+                {"name": "email", "field_type": "string", "annotations": {"pii": true}},
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+                {"name": "org", "field_type": "string", "annotations": {"index": true}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201, "schema register failed");
+
+    // Create user with PII field
+    let resp = client
+        .post(server.http_url("/sigil/pii-test/users"))
+        .json(&serde_json::json!({
+            "fields": {
+                "user_id": "alice",
+                "email": "alice@example.com",
+                "password": "test12345678",
+                "org": "acme"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        201,
+        "user create with PII failed: {:?}",
+        resp.text().await
+    );
+
+    // Get user — email should be decrypted back to plaintext
+    let resp = client
+        .get(server.http_url("/sigil/pii-test/users/alice"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let user: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(user["user_id"], "alice");
+    assert_eq!(user["fields"]["org"], "acme");
+    assert_eq!(
+        user["fields"]["email"], "alice@example.com",
+        "PII field should be decrypted on read"
+    );
+
+    // Password should not be in user record
+    assert!(
+        user["fields"].get("password").is_none(),
+        "password must not be in user record"
+    );
+
+    // Update PII field
+    let resp = client
+        .patch(server.http_url("/sigil/pii-test/users/alice"))
+        .json(&serde_json::json!({"fields": {"email": "newalice@example.com"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Verify updated PII decrypts correctly
+    let resp = client
+        .get(server.http_url("/sigil/pii-test/users/alice"))
+        .send()
+        .await
+        .unwrap();
+    let user: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        user["fields"]["email"], "newalice@example.com",
+        "updated PII should decrypt correctly"
+    );
+
+    // Verify credentials still work
+    let resp = client
+        .post(server.http_url("/sigil/pii-test/verify"))
+        .json(&serde_json::json!({"user_id": "alice", "password": "test12345678"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
 }
