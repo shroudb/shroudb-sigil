@@ -135,11 +135,51 @@ shroudb-sigil-core/        — domain types (Schema, FieldAnnotations, etc.)
 shroudb-sigil-engine/      — Store-backed engine (SigilEngine)
 shroudb-sigil-protocol/    — RESP3 command parsing + dispatch
 shroudb-sigil-server/      — Axum HTTP + TCP binary
-shroudb-sigil-client/      — Rust client SDK (planned)
-shroudb-sigil-cli/         — CLI tool (planned)
+shroudb-sigil-client/      — Rust client SDK
+shroudb-sigil-cli/         — CLI tool (single command + interactive REPL)
 ```
 
 See [`protocol.toml`](protocol.toml) for the full protocol specification.
+
+## CLI
+
+```sh
+# Single command
+shroudb-sigil-cli HEALTH
+shroudb-sigil-cli SCHEMA REGISTER myapp '{"fields":[...]}'
+shroudb-sigil-cli USER CREATE myapp alice '{"password":"secret","org":"acme"}'
+shroudb-sigil-cli SESSION CREATE myapp alice secret
+
+# Interactive REPL
+shroudb-sigil-cli
+sigil> HEALTH
+OK
+sigil> USER VERIFY myapp alice secret
+valid
+sigil> quit
+```
+
+## Rust Client SDK
+
+```rust
+use shroudb_sigil_client::SigilClient;
+
+let mut client = SigilClient::connect("127.0.0.1:6499").await?;
+
+client.schema_register("myapp", serde_json::json!({
+    "fields": [
+        {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+        {"name": "org", "field_type": "string", "annotations": {"index": true}}
+    ]
+})).await?;
+
+client.user_create("myapp", "alice", serde_json::json!({
+    "password": "correct-horse", "org": "acme"
+})).await?;
+
+let tokens = client.session_create("myapp", "alice", "correct-horse", None).await?;
+println!("JWT: {}", tokens.access_token);
+```
 
 ## License
 

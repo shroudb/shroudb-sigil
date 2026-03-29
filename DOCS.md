@@ -212,3 +212,75 @@ After a configurable number of failed password attempts (default: 5), the accoun
 - **CSRF:** Origin/Referer validation on POST requests
 - **Rate limiting:** per-IP token bucket on credential-sensitive endpoints
 - **Fail-closed:** PII fields without Cipher → write rejected, not stored plaintext
+
+## CLI
+
+The CLI connects over TCP (RESP3) and supports single-command and interactive modes.
+
+```sh
+# Connect to a specific server
+shroudb-sigil-cli --addr 127.0.0.1:6499
+
+# Single command
+shroudb-sigil-cli HEALTH
+shroudb-sigil-cli SCHEMA REGISTER myapp '{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}}]}'
+shroudb-sigil-cli USER CREATE myapp alice '{"password":"test12345678"}'
+shroudb-sigil-cli USER VERIFY myapp alice test12345678
+shroudb-sigil-cli SESSION CREATE myapp alice test12345678
+shroudb-sigil-cli JWKS myapp
+shroudb-sigil-cli PASSWORD CHANGE myapp alice test12345678 newpassword
+shroudb-sigil-cli SESSION REVOKE ALL myapp alice
+```
+
+Interactive mode starts when no command is given:
+
+```
+$ shroudb-sigil-cli
+sigil> HEALTH
+OK
+sigil> SCHEMA LIST
+myapp
+sigil> quit
+```
+
+JSON arguments with braces are preserved as single arguments (not split on whitespace).
+
+## Rust Client SDK
+
+```rust
+use shroudb_sigil_client::SigilClient;
+
+let mut client = SigilClient::connect("127.0.0.1:6499").await?;
+
+// Schema
+client.schema_register("myapp", schema_json).await?;
+let schema = client.schema_get("myapp").await?;
+let names = client.schema_list().await?;
+
+// Users
+let record = client.user_create("myapp", "alice", fields_json).await?;
+let record = client.user_get("myapp", "alice").await?;
+let record = client.user_update("myapp", "alice", updates_json).await?;
+client.user_delete("myapp", "alice").await?;
+let valid = client.user_verify("myapp", "alice", "password").await?;
+
+// Sessions
+let tokens = client.session_create("myapp", "alice", "password", None).await?;
+let tokens = client.session_refresh("myapp", &tokens.refresh_token).await?;
+client.session_revoke("myapp", &tokens.refresh_token).await?;
+let count = client.session_revoke_all("myapp", "alice").await?;
+let sessions = client.session_list("myapp", "alice").await?;
+
+// Password
+client.password_change("myapp", "alice", "old", "new").await?;
+client.password_reset("myapp", "alice", "new").await?;
+let algo = client.password_import("myapp", "alice", "$2b$12$...").await?;
+
+// JWT
+let jwks = client.jwks("myapp").await?;
+```
+
+Response types:
+
+- `TokenPair` — `access_token: String`, `refresh_token: String`, `expires_in: u64`
+- `UserRecord` — `user_id: String`, `fields: serde_json::Value`, `created_at: Option<u64>`, `updated_at: Option<u64>`
