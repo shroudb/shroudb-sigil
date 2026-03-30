@@ -159,6 +159,25 @@ async fn main() -> anyhow::Result<()> {
             .context("failed to initialize sigil engine")?,
     );
 
+    // Seed schemas from config (idempotent — skips if already registered)
+    for schema_cfg in &cfg.schemas {
+        let schema = schema_cfg.to_schema();
+        match engine.schema_register(schema).await {
+            Ok(version) => {
+                tracing::info!(schema = %schema_cfg.name, version, "schema registered from config");
+            }
+            Err(shroudb_sigil_core::error::SigilError::SchemaExists(_)) => {
+                tracing::debug!(schema = %schema_cfg.name, "schema already exists, skipping");
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "failed to register schema '{}': {e}",
+                    schema_cfg.name
+                ));
+            }
+        }
+    }
+
     // Shutdown signal
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 

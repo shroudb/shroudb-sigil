@@ -673,6 +673,7 @@ fn auth_server_config() -> TestServerConfig {
         cipher: None,
         veil: None,
         keep: None,
+        schemas: vec![],
     }
 }
 
@@ -1359,4 +1360,66 @@ async fn keep_secret_field_storage() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Config-seeded schemas — zero API calls needed before using
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn config_seeded_schema_works_immediately() {
+    let server = TestServer::start_with_config(TestServerConfig {
+        schemas: vec![TestSchemaConfig {
+            toml: r#"
+[[schemas]]
+name = "myapp"
+
+[[schemas.fields]]
+name = "password"
+field_type = "string"
+credential = true
+
+[[schemas.fields]]
+name = "org"
+field_type = "string"
+index = true
+"#
+            .to_string(),
+        }],
+        ..Default::default()
+    })
+    .await
+    .expect("server failed to start with seeded schema");
+
+    let client = reqwest::Client::new();
+
+    // Schema should already exist — no SCHEMA REGISTER needed
+    let resp = client
+        .get(server.http_url("/sigil/schemas/myapp"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "seeded schema should exist");
+
+    // Can immediately create users
+    let resp = client
+        .post(server.http_url("/sigil/myapp/users"))
+        .json(&serde_json::json!({
+            "fields": {"user_id": "alice", "password": "correct-horse", "org": "acme"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Can immediately login
+    let resp = client
+        .post(server.http_url("/sigil/myapp/sessions"))
+        .json(&serde_json::json!({"user_id": "alice", "password": "correct-horse"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let login: serde_json::Value = resp.json().await.unwrap();
+    assert!(login["access_token"].is_string());
 }

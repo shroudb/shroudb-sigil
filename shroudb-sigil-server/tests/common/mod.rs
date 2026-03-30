@@ -31,6 +31,12 @@ pub struct TestServerConfig {
     pub veil: Option<TestVeilConfig>,
     /// Keep server connection. None = no keep.
     pub keep: Option<TestKeepConfig>,
+    /// Schemas to seed from config.
+    pub schemas: Vec<TestSchemaConfig>,
+}
+
+pub struct TestSchemaConfig {
+    pub toml: String,
 }
 
 pub struct TestCipherConfig {
@@ -406,6 +412,11 @@ mode = "embedded"
 
     if let Some(ref keep) = config.keep {
         toml.push_str(&format!("\n[keep]\naddr = \"{}\"\n", keep.addr));
+    }
+
+    for schema in &config.schemas {
+        toml.push_str(&schema.toml);
+        toml.push('\n');
     }
 
     toml

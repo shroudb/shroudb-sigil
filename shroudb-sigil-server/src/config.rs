@@ -17,6 +17,60 @@ pub struct SigilServerConfig {
     pub veil: Option<VeilConfig>,
     #[serde(default)]
     pub keep: Option<KeepConfig>,
+    #[serde(default)]
+    pub schemas: Vec<SchemaConfig>,
+}
+
+/// Schema definition in config — registered at startup if not already present.
+#[derive(Debug, Deserialize)]
+pub struct SchemaConfig {
+    pub name: String,
+    pub fields: Vec<SchemaFieldConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SchemaFieldConfig {
+    pub name: String,
+    pub field_type: String,
+    #[serde(default)]
+    pub credential: bool,
+    #[serde(default)]
+    pub pii: bool,
+    #[serde(default)]
+    pub searchable: bool,
+    #[serde(default)]
+    pub secret: bool,
+    #[serde(default)]
+    pub index: bool,
+}
+
+impl SchemaConfig {
+    /// Convert to the core Schema type for registration.
+    pub fn to_schema(&self) -> shroudb_sigil_core::schema::Schema {
+        shroudb_sigil_core::schema::Schema {
+            name: self.name.clone(),
+            fields: self
+                .fields
+                .iter()
+                .map(|f| shroudb_sigil_core::schema::FieldDef {
+                    name: f.name.clone(),
+                    field_type: match f.field_type.as_str() {
+                        "integer" => shroudb_sigil_core::schema::FieldType::Integer,
+                        "boolean" => shroudb_sigil_core::schema::FieldType::Boolean,
+                        "bytes" => shroudb_sigil_core::schema::FieldType::Bytes,
+                        _ => shroudb_sigil_core::schema::FieldType::String,
+                    },
+                    annotations: shroudb_sigil_core::schema::FieldAnnotations {
+                        credential: f.credential,
+                        pii: f.pii,
+                        searchable: f.searchable,
+                        secret: f.secret,
+                        index: f.index,
+                    },
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Cipher engine connection for PII field encryption.
