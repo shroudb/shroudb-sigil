@@ -29,11 +29,17 @@ pub struct TestServerConfig {
     pub cipher: Option<TestCipherConfig>,
     /// Veil server connection. None = no veil.
     pub veil: Option<TestVeilConfig>,
+    /// Keep server connection. None = no keep.
+    pub keep: Option<TestKeepConfig>,
 }
 
 pub struct TestCipherConfig {
     pub addr: String,
     pub keyring: String,
+}
+
+pub struct TestKeepConfig {
+    pub addr: String,
 }
 
 pub struct TestVeilConfig {
@@ -191,6 +197,71 @@ impl Drop for TestVeilServer {
     }
 }
 
+/// A running Keep test server. Killed on drop.
+pub struct TestKeepServer {
+    child: Child,
+    pub tcp_addr: String,
+    _data_dir: tempfile::TempDir,
+}
+
+impl TestKeepServer {
+    pub async fn start() -> Option<Self> {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let candidates = [
+            PathBuf::from(manifest_dir).join("../../shroudb-keep/target/debug/shroudb-keep"),
+            PathBuf::from(manifest_dir).join("../shroudb-keep/target/debug/shroudb-keep"),
+        ];
+        let binary = candidates.into_iter().find(|p| p.exists())?;
+
+        let tcp_port = free_port();
+        let tcp_addr = format!("127.0.0.1:{tcp_port}");
+        let data_dir = tempfile::tempdir().ok()?;
+
+        let child = Command::new(&binary)
+            .arg("--tcp-bind")
+            .arg(&tcp_addr)
+            .arg("--data-dir")
+            .arg(data_dir.path())
+            .arg("--log-level")
+            .arg("warn")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .ok()?;
+
+        let mut server = Self {
+            child,
+            tcp_addr: tcp_addr.clone(),
+            _data_dir: data_dir,
+        };
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if tokio::time::Instant::now() > deadline {
+                eprintln!("keep server failed to start");
+                return None;
+            }
+            if let Some(status) = server.child.try_wait().ok().flatten() {
+                eprintln!("keep server exited during startup: {status}");
+                return None;
+            }
+            if tokio::net::TcpStream::connect(&tcp_addr).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        Some(server)
+    }
+}
+
+impl Drop for TestKeepServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 pub struct TestToken {
     pub raw: String,
     pub tenant: String,
@@ -331,6 +402,10 @@ mode = "embedded"
             "\n[veil]\naddr = \"{}\"\nindex = \"{}\"\n",
             veil.addr, veil.index
         ));
+    }
+
+    if let Some(ref keep) = config.keep {
+        toml.push_str(&format!("\n[keep]\naddr = \"{}\"\n", keep.addr));
     }
 
     toml

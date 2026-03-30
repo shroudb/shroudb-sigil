@@ -672,6 +672,7 @@ fn auth_server_config() -> TestServerConfig {
         ],
         cipher: None,
         veil: None,
+        keep: None,
     }
 }
 
@@ -1263,4 +1264,99 @@ async fn login_by_encrypted_email() {
         user["fields"]["email"], "[encrypted]",
         "PII should be redacted, not decrypted"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Keep: secret field versioned storage
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn keep_secret_field_storage() {
+    let keep = match TestKeepServer::start().await {
+        Some(k) => k,
+        None => {
+            eprintln!("skipping: keep binary not found");
+            return;
+        }
+    };
+
+    let server = TestServer::start_with_config(TestServerConfig {
+        keep: Some(TestKeepConfig {
+            addr: keep.tcp_addr.clone(),
+        }),
+        ..Default::default()
+    })
+    .await
+    .expect("sigil server failed to start with keep");
+
+    let client = reqwest::Client::new();
+
+    // Register schema with a secret field
+    client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "secrets",
+            "fields": [
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+                {"name": "api_key", "field_type": "string", "annotations": {"secret": true}},
+                {"name": "org", "field_type": "string", "annotations": {"index": true}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Create user with a secret field
+    let resp = client
+        .post(server.http_url("/sigil/secrets/users"))
+        .json(&serde_json::json!({
+            "fields": {
+                "user_id": "alice",
+                "password": "test12345678",
+                "api_key": "sk_live_abc123xyz",
+                "org": "acme"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        201,
+        "create with secret field failed: {:?}",
+        resp.text().await
+    );
+
+    // Verify the secret was stored in Keep
+    let mut keep_client = shroudb_keep_client::KeepClient::connect(&keep.tcp_addr)
+        .await
+        .unwrap();
+    let secret = keep_client
+        .get("secrets/alice/api_key", None)
+        .await
+        .unwrap();
+    // The secret value should be the JSON-serialized version of the field value
+    assert!(!secret.value.is_empty(), "secret should be stored in Keep");
+
+    // Secret field should NOT appear in user record (stored in Keep, not inline)
+    let resp = client
+        .get(server.http_url("/sigil/secrets/users/alice"))
+        .send()
+        .await
+        .unwrap();
+    let user: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(user["fields"]["org"], "acme");
+    assert!(
+        user["fields"].get("api_key").is_none(),
+        "secret field should not be in user record"
+    );
+
+    // Credentials still work
+    let resp = client
+        .post(server.http_url("/sigil/secrets/verify"))
+        .json(&serde_json::json!({"user_id": "alice", "password": "test12345678"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
 }

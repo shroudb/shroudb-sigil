@@ -2120,6 +2120,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "shroudb-keep-client"
+version = "1.0.0"
+source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
+checksum = "aa71e65408fc96ff97e4bdc724807d65ce2ae5f5134aa91b71fb836eae9f6994"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "shroudb-protocol-wire"
 version = "0.1.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
@@ -2172,6 +2184,7 @@ dependencies = [
  "serde_json",
  "shroudb-cipher-client",
  "shroudb-crypto",
+ "shroudb-keep-client",
  "shroudb-sigil-core",
  "shroudb-storage",
  "shroudb-store",
@@ -2219,6 +2232,7 @@ dependencies = [
  "shroudb-acl",
  "shroudb-cipher-client",
  "shroudb-crypto",
+ "shroudb-keep-client",
  "shroudb-protocol-wire",
  "shroudb-sigil-core",
  "shroudb-sigil-engine",

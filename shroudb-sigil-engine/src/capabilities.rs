@@ -23,9 +23,12 @@ pub trait VeilOps: Send + Sync {
 }
 
 /// Trait for Keep operations (versioned secret storage).
+///
+/// Secrets are stored under a path string and versioned automatically.
+/// Values are raw bytes (base64 encoding handled internally).
 pub trait KeepOps: Send + Sync {
-    fn store_secret(&self, key: &[u8], value: &[u8]) -> BoxFut<'_, u64>;
-    fn get_secret(&self, key: &[u8]) -> BoxFut<'_, Vec<u8>>;
+    fn store_secret(&self, path: &str, value: &[u8]) -> BoxFut<'_, u64>;
+    fn get_secret(&self, path: &str) -> BoxFut<'_, Vec<u8>>;
 }
 
 /// Trait for Sentry operations (post-verify authorization enrichment).

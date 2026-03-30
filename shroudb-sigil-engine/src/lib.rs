@@ -9,6 +9,7 @@ pub mod cipher_remote;
 pub mod credential;
 pub mod engine;
 pub mod jwt;
+pub mod keep_remote;
 pub mod schema_registry;
 pub mod session;
 pub mod veil_remote;

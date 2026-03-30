@@ -315,7 +315,7 @@ impl<S: Store> WriteCoordinator<S> {
                         .ok_or_else(|| SigilError::CapabilityMissing("keep".into()))?;
                     let secret_bytes = value.to_string().into_bytes();
                     let key = format!("{}/{}/{}", schema.name, user_id, field_name);
-                    keep.store_secret(key.as_bytes(), &secret_bytes).await?;
+                    keep.store_secret(&key, &secret_bytes).await?;
                 }
                 shroudb_sigil_core::routing::FieldTreatment::Credential => unreachable!(),
             }
@@ -456,7 +456,7 @@ impl<S: Store> WriteCoordinator<S> {
 
                 let secret_bytes = value.to_string().into_bytes();
                 let key = format!("{schema_name}/{user_id}/{field_name}");
-                keep.store_secret(key.as_bytes(), &secret_bytes).await?;
+                keep.store_secret(&key, &secret_bytes).await?;
 
                 Ok(FieldWriteResult {
                     compensating_op: None,

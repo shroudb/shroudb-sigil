@@ -142,6 +142,17 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!(addr = %veil_cfg.addr, index = %veil_cfg.index, "veil connected");
     }
 
+    if let Some(ref keep_cfg) = cfg.keep {
+        let keep_ops = shroudb_sigil_engine::keep_remote::RemoteKeepOps::connect(
+            &keep_cfg.addr,
+            keep_cfg.auth_token.as_deref(),
+        )
+        .await
+        .context("failed to connect to keep server")?;
+        capabilities.keep = Some(Box::new(keep_ops));
+        tracing::info!(addr = %keep_cfg.addr, "keep connected");
+    }
+
     let engine = Arc::new(
         SigilEngine::new(store, sigil_config, capabilities)
             .await
