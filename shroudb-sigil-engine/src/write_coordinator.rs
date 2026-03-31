@@ -197,8 +197,7 @@ impl<S: Store> WriteCoordinator<S> {
                     }
                 }
                 Err(e) => {
-                    self.rollback(completed_ops).await;
-                    return Err(e);
+                    return Err(self.rollback_and_fail(completed_ops, e).await);
                 }
             }
         }
@@ -212,8 +211,7 @@ impl<S: Store> WriteCoordinator<S> {
             )
             .await
         {
-            self.rollback(completed_ops).await;
-            return Err(e);
+            return Err(self.rollback_and_fail(completed_ops, e).await);
         }
 
         // Write the envelope record — the "commit point"
@@ -232,8 +230,8 @@ impl<S: Store> WriteCoordinator<S> {
             .put(&envelopes_ns, entity_id.as_bytes(), &value, None)
             .await
         {
-            self.rollback(completed_ops).await;
-            return Err(SigilError::Store(e.to_string()));
+            let cause = SigilError::Store(e.to_string());
+            return Err(self.rollback_and_fail(completed_ops, cause).await);
         }
 
         Ok(record)
@@ -427,8 +425,7 @@ impl<S: Store> WriteCoordinator<S> {
                 Ok(Some(op)) => completed_ops.push(op),
                 Ok(None) => {}
                 Err(e) => {
-                    self.rollback(completed_ops).await;
-                    return Err(e);
+                    return Err(self.rollback_and_fail(completed_ops, e).await);
                 }
             }
         }
@@ -442,8 +439,7 @@ impl<S: Store> WriteCoordinator<S> {
             )
             .await
         {
-            self.rollback(completed_ops).await;
-            return Err(e);
+            return Err(self.rollback_and_fail(completed_ops, e).await);
         }
 
         record.updated_at = now_secs();
@@ -453,8 +449,8 @@ impl<S: Store> WriteCoordinator<S> {
             .put(&envelopes_ns, entity_id.as_bytes(), &value, None)
             .await
         {
-            self.rollback(completed_ops).await;
-            return Err(SigilError::Store(e.to_string()));
+            let cause = SigilError::Store(e.to_string());
+            return Err(self.rollback_and_fail(completed_ops, cause).await);
         }
 
         Ok(record)
@@ -504,11 +500,13 @@ impl<S: Store> WriteCoordinator<S> {
                 FieldTreatment::SearchableEncrypted => {
                     if let Some(veil) = &self.capabilities.veil {
                         let entry_id = format!("{entity_id}/{}", field_def.name);
-                        veil.delete(&entry_id).await.map_err(|e| {
-                            SigilError::Internal(format!(
-                                "blind index cleanup failed for {entry_id}: {e}"
-                            ))
-                        })?;
+                        if let Err(e) = veil.delete(&entry_id).await {
+                            tracing::warn!(
+                                entry_id = %entry_id,
+                                error = %e,
+                                "blind index entry not cleaned up during delete"
+                            );
+                        }
                     }
                 }
                 FieldTreatment::VersionedSecret => {
@@ -542,10 +540,12 @@ impl<S: Store> WriteCoordinator<S> {
                 }
             }
             for key in &session_keys {
-                self.store
-                    .delete(&sessions_ns, key)
-                    .await
-                    .map_err(|e| SigilError::Store(e.to_string()))?;
+                if let Err(e) = self.store.delete(&sessions_ns, key).await {
+                    tracing::warn!(
+                        error = %e,
+                        "session not cleaned up during delete"
+                    );
+                }
             }
         }
 
@@ -683,6 +683,23 @@ impl<S: Store> WriteCoordinator<S> {
         }
     }
 
+    /// Rollback completed operations and surface any orphans in the error.
+    async fn rollback_and_fail(&self, ops: Vec<CompensatingOp>, cause: SigilError) -> SigilError {
+        let orphans = self.rollback(ops).await;
+        if orphans.is_empty() {
+            cause
+        } else {
+            tracing::warn!(
+                orphans = ?orphans,
+                "rollback left orphaned data that could not be cleaned up"
+            );
+            SigilError::Internal(format!(
+                "{cause} (rollback orphans: {})",
+                orphans.join(", ")
+            ))
+        }
+    }
+
     /// Execute compensating operations in reverse order. Returns descriptions
     /// of any operations that failed — these represent orphaned data that
     /// could not be cleaned up.
@@ -753,7 +770,7 @@ pub(crate) fn credential_store_key(entity_id: &str, field_name: &str) -> String 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
+        .expect("system clock is before Unix epoch")
         .as_secs()
 }
 
@@ -1636,9 +1653,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_fails_if_veil_cleanup_fails() {
-        // If Veil blind index cleanup fails during delete, the operation should
-        // fail and the envelope should remain intact.
+    async fn delete_succeeds_despite_veil_cleanup_failure() {
+        // Delete is best-effort for associated data cleanup. If Veil blind
+        // index cleanup fails, the envelope is still deleted (logged at WARN).
         let store = create_test_store().await;
         let registry = SchemaRegistry::new(store.clone());
         registry.init().await.unwrap();
@@ -1676,7 +1693,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Delete with failing Veil
+        // Delete with failing Veil — should succeed anyway (best-effort cleanup)
         let failing_caps = Arc::new(Capabilities {
             cipher: Some(Box::new(TestCipherOps)),
             veil: Some(Box::new(FailingVeilDeleteOps)),
@@ -1684,19 +1701,15 @@ mod tests {
         });
         let coord_del = WriteCoordinator::new(store.clone(), credentials, failing_caps);
 
-        let err = coord_del
+        coord_del
             .delete_envelope(&schema, "user1")
             .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("blind index cleanup failed"),
-            "expected veil cleanup error, got: {err}"
-        );
+            .expect("delete should succeed despite Veil cleanup failure");
 
-        // Envelope should still exist — delete was aborted before commit point
+        // Envelope should be gone — delete completed
         assert!(
-            coord_del.get_envelope(&schema, "user1").await.is_ok(),
-            "envelope should still exist after failed delete"
+            coord_del.get_envelope(&schema, "user1").await.is_err(),
+            "envelope should be deleted"
         );
     }
 }
