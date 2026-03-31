@@ -48,9 +48,17 @@ impl<S: Store> WriteCoordinator<S> {
         }
     }
 
-    async fn emit_audit_event(&self, operation: &str, resource: &str, actor: &str) {
+    /// Emit an audit event to Chronicle. Fails closed: if Chronicle is configured
+    /// but unreachable, the calling operation fails. Security infrastructure must
+    /// not allow unaudited credential operations.
+    async fn emit_audit_event(
+        &self,
+        operation: &str,
+        resource: &str,
+        actor: &str,
+    ) -> Result<(), SigilError> {
         let Some(chronicle) = &self.capabilities.chronicle else {
-            return;
+            return Ok(());
         };
         let event = shroudb_chronicle_core::event::Event {
             id: uuid::Uuid::new_v4().to_string(),
@@ -64,9 +72,10 @@ impl<S: Store> WriteCoordinator<S> {
             actor: actor.to_string(),
             metadata: Default::default(),
         };
-        if let Err(e) = chronicle.record(event).await {
-            tracing::warn!(error = %e, "failed to emit audit event");
-        }
+        chronicle
+            .record(event)
+            .await
+            .map_err(|e| SigilError::Internal(format!("audit event failed: {e}")))
     }
 
     async fn check_policy(
@@ -194,6 +203,19 @@ impl<S: Store> WriteCoordinator<S> {
             }
         }
 
+        // Audit event before commit — fail closed if Chronicle is unreachable
+        if let Err(e) = self
+            .emit_audit_event(
+                "create",
+                &format!("{}/{}", schema.name, entity_id),
+                entity_id,
+            )
+            .await
+        {
+            self.rollback(completed_ops).await;
+            return Err(e);
+        }
+
         // Write the envelope record — the "commit point"
         let now = now_secs();
         let record = EnvelopeRecord {
@@ -213,13 +235,6 @@ impl<S: Store> WriteCoordinator<S> {
             self.rollback(completed_ops).await;
             return Err(SigilError::Store(e.to_string()));
         }
-
-        self.emit_audit_event(
-            "create",
-            &format!("{}/{}", schema.name, entity_id),
-            entity_id,
-        )
-        .await;
 
         Ok(record)
     }
@@ -418,6 +433,19 @@ impl<S: Store> WriteCoordinator<S> {
             }
         }
 
+        // Audit event before commit — fail closed if Chronicle is unreachable
+        if let Err(e) = self
+            .emit_audit_event(
+                "update",
+                &format!("{}/{}", schema.name, entity_id),
+                entity_id,
+            )
+            .await
+        {
+            self.rollback(completed_ops).await;
+            return Err(e);
+        }
+
         record.updated_at = now_secs();
         let value = serde_json::to_vec(&record).map_err(|e| SigilError::Internal(e.to_string()))?;
         if let Err(e) = self
@@ -429,18 +457,16 @@ impl<S: Store> WriteCoordinator<S> {
             return Err(SigilError::Store(e.to_string()));
         }
 
-        self.emit_audit_event(
-            "update",
-            &format!("{}/{}", schema.name, entity_id),
-            entity_id,
-        )
-        .await;
-
         Ok(record)
     }
 
     /// Delete an envelope and all associated data (credentials, sessions,
     /// blind index entries).
+    ///
+    /// Deletion order: associated data first (credentials, blind indexes,
+    /// sessions), then the envelope record last. The envelope record is the
+    /// commit point — if any pre-deletion fails, the envelope remains intact
+    /// and the error is propagated.
     pub async fn delete_envelope(
         &self,
         schema: &Schema,
@@ -453,30 +479,46 @@ impl<S: Store> WriteCoordinator<S> {
         let creds_ns = format!("sigil.{schema_name}.credentials");
         let sessions_ns = format!("sigil.{schema_name}.sessions");
 
-        // Delete envelope record
+        // Verify envelope exists before deleting associated data
         self.store
-            .delete(&envelopes_ns, entity_id.as_bytes())
+            .get(&envelopes_ns, entity_id.as_bytes(), None)
             .await
-            .map_err(|e| SigilError::Store(e.to_string()))?;
+            .map_err(|_| SigilError::EntityNotFound)?;
 
-        // Delete credential records for all credential fields
+        // Phase 1: Delete associated data (before envelope commit point)
+
+        // Delete credential records
         for field_def in &schema.fields {
             let treatment = route_field(&field_def.annotations);
             match treatment {
                 FieldTreatment::Credential => {
                     let key = credential_store_key(entity_id, &field_def.name);
-                    // Best-effort: credential may not exist if field wasn't populated
-                    let _ = self.store.delete(&creds_ns, key.as_bytes()).await;
+                    if let Err(e) = self.store.delete(&creds_ns, key.as_bytes()).await {
+                        tracing::debug!(
+                            key = %key,
+                            error = %e,
+                            "credential not found during delete (may not have been populated)"
+                        );
+                    }
                 }
                 FieldTreatment::SearchableEncrypted => {
-                    // Clean up blind index entries in Veil
                     if let Some(veil) = &self.capabilities.veil {
                         let entry_id = format!("{entity_id}/{}", field_def.name);
-                        if let Err(e) = veil.delete(&entry_id).await {
-                            tracing::warn!(
-                                entry_id = %entry_id,
+                        veil.delete(&entry_id).await.map_err(|e| {
+                            SigilError::Internal(format!(
+                                "blind index cleanup failed for {entry_id}: {e}"
+                            ))
+                        })?;
+                    }
+                }
+                FieldTreatment::VersionedSecret => {
+                    if let Some(keep) = &self.capabilities.keep {
+                        let path = format!("{schema_name}/{entity_id}/{}", field_def.name);
+                        if let Err(e) = keep.delete_secret(&path).await {
+                            tracing::debug!(
+                                path = %path,
                                 error = %e,
-                                "failed to clean up blind index entry on delete"
+                                "secret not found during delete"
                             );
                         }
                     }
@@ -485,8 +527,10 @@ impl<S: Store> WriteCoordinator<S> {
             }
         }
 
-        // Revoke all sessions for this entity
+        // Delete all sessions for this entity
         if let Ok(page) = self.store.list(&sessions_ns, None, None, 10_000).await {
+            // Collect matching session keys first, then delete all
+            let mut session_keys = Vec::new();
             for key in &page.keys {
                 if let Ok(entry) = self.store.get(&sessions_ns, key, None).await
                     && let Ok(record) = serde_json::from_slice::<
@@ -494,20 +538,30 @@ impl<S: Store> WriteCoordinator<S> {
                     >(&entry.value)
                     && record.entity_id == entity_id
                 {
-                    self.store
-                        .delete(&sessions_ns, key)
-                        .await
-                        .map_err(|e| SigilError::Store(e.to_string()))?;
+                    session_keys.push(key.clone());
                 }
+            }
+            for key in &session_keys {
+                self.store
+                    .delete(&sessions_ns, key)
+                    .await
+                    .map_err(|e| SigilError::Store(e.to_string()))?;
             }
         }
 
+        // Audit event before commit — fail closed if Chronicle is unreachable
         self.emit_audit_event(
             "delete",
             &format!("{}/{}", schema_name, entity_id),
             entity_id,
         )
-        .await;
+        .await?;
+
+        // Phase 2: Delete envelope record (commit point)
+        self.store
+            .delete(&envelopes_ns, entity_id.as_bytes())
+            .await
+            .map_err(|e| SigilError::Store(e.to_string()))?;
 
         Ok(())
     }
@@ -629,42 +683,53 @@ impl<S: Store> WriteCoordinator<S> {
         }
     }
 
-    async fn rollback(&self, ops: Vec<CompensatingOp>) {
+    /// Execute compensating operations in reverse order. Returns descriptions
+    /// of any operations that failed — these represent orphaned data that
+    /// could not be cleaned up.
+    async fn rollback(&self, ops: Vec<CompensatingOp>) -> Vec<String> {
+        let mut orphans = Vec::new();
         for op in ops.into_iter().rev() {
             match op {
                 CompensatingOp::Store { namespace, key } => {
                     if let Err(e) = self.store.delete(&namespace, &key).await {
+                        let desc = format!("store:{namespace}/{}", String::from_utf8_lossy(&key));
                         tracing::error!(
-                            namespace = %namespace,
+                            orphan = %desc,
                             error = %e,
                             "compensating store DELETE failed during rollback"
                         );
+                        orphans.push(desc);
                     }
                 }
                 CompensatingOp::Veil { entry_id } => {
                     if let Some(veil) = &self.capabilities.veil
                         && let Err(e) = veil.delete(&entry_id).await
                     {
+                        let desc = format!("veil:{entry_id}");
                         tracing::error!(
-                            entry_id = %entry_id,
+                            orphan = %desc,
                             error = %e,
                             "compensating veil DELETE failed during rollback"
                         );
+                        orphans.push(desc);
                     }
                 }
                 CompensatingOp::Keep { path } => {
                     if let Some(keep) = &self.capabilities.keep
                         && let Err(e) = keep.delete_secret(&path).await
                     {
+                        let desc = format!("keep:{path}");
                         tracing::error!(
-                            path = %path,
+                            orphan = %desc,
                             error = %e,
                             "compensating keep DELETE failed during rollback"
                         );
+                        orphans.push(desc);
                     }
                 }
             }
         }
+        orphans
     }
 }
 
@@ -1406,5 +1471,232 @@ mod tests {
         let cred_key = credential_store_key("user1", "password");
         let result = store.get(cred_ns, cred_key.as_bytes(), None).await;
         assert!(result.is_err(), "credential should have been rolled back");
+    }
+
+    // ── Audit fail-closed tests ─────────────────────────────────────
+
+    /// ChronicleOps that always fails, simulating an unreachable audit system.
+    struct FailingChronicleOps;
+
+    impl shroudb_chronicle_core::ops::ChronicleOps for FailingChronicleOps {
+        fn record(
+            &self,
+            _event: shroudb_chronicle_core::event::Event,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>
+        {
+            Box::pin(async { Err("chronicle unreachable".to_string()) })
+        }
+
+        fn record_batch(
+            &self,
+            _events: Vec<shroudb_chronicle_core::event::Event>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>
+        {
+            Box::pin(async { Err("chronicle unreachable".to_string()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn audit_event_failure_blocks_create() {
+        // If Chronicle is configured but unreachable, create_envelope must fail.
+        // Security infrastructure cannot allow unaudited operations.
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store.clone());
+        registry.init().await.unwrap();
+
+        let schema = Schema {
+            name: "audit-test".to_string(),
+            fields: vec![FieldDef {
+                name: "org_id".to_string(),
+                field_type: FieldType::String,
+                annotations: FieldAnnotations {
+                    index: true,
+                    ..Default::default()
+                },
+            }],
+        };
+        registry.register(schema.clone()).await.unwrap();
+
+        let capabilities = Arc::new(Capabilities {
+            chronicle: Some(Arc::new(FailingChronicleOps)),
+            ..Default::default()
+        });
+        let credentials = Arc::new(CredentialManager::new(
+            store.clone(),
+            PasswordPolicy::default(),
+        ));
+        let coord = WriteCoordinator::new(store.clone(), credentials, capabilities);
+
+        let mut fields = HashMap::new();
+        fields.insert("org_id".into(), serde_json::json!("acme"));
+
+        let err = coord
+            .create_envelope(&schema, "user1", &fields)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("audit"),
+            "expected audit failure error, got: {err}"
+        );
+
+        // Envelope should NOT exist — operation failed before returning Ok
+        assert!(
+            coord.get_envelope(&schema, "user1").await.is_err(),
+            "envelope should not exist after audit failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_event_failure_blocks_delete() {
+        // Same for delete: if audit fails, the operation should fail.
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store.clone());
+        registry.init().await.unwrap();
+
+        let schema = Schema {
+            name: "audit-del".to_string(),
+            fields: vec![FieldDef {
+                name: "name".to_string(),
+                field_type: FieldType::String,
+                annotations: FieldAnnotations::default(),
+            }],
+        };
+        registry.register(schema.clone()).await.unwrap();
+
+        // Create without chronicle (succeeds)
+        let credentials = Arc::new(CredentialManager::new(
+            store.clone(),
+            PasswordPolicy::default(),
+        ));
+        let no_chronicle = Arc::new(Capabilities::default());
+        let coord_create = WriteCoordinator::new(store.clone(), credentials.clone(), no_chronicle);
+
+        let mut fields = HashMap::new();
+        fields.insert("name".into(), serde_json::json!("Alice"));
+        coord_create
+            .create_envelope(&schema, "user1", &fields)
+            .await
+            .unwrap();
+
+        // Now delete WITH failing chronicle
+        let with_chronicle = Arc::new(Capabilities {
+            chronicle: Some(Arc::new(FailingChronicleOps)),
+            ..Default::default()
+        });
+        let coord_delete = WriteCoordinator::new(store.clone(), credentials, with_chronicle);
+
+        let err = coord_delete
+            .delete_envelope(&schema, "user1")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("audit"),
+            "expected audit failure error, got: {err}"
+        );
+    }
+
+    // ── Delete path correctness tests ───────────────────────────────
+
+    /// VeilOps that fails on delete, simulating unreachable Veil during cleanup.
+    struct FailingVeilDeleteOps;
+
+    impl crate::capabilities::VeilOps for FailingVeilDeleteOps {
+        fn put(
+            &self,
+            _entry_id: &str,
+            _plaintext: &[u8],
+            _field: Option<&str>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn delete(
+            &self,
+            _entry_id: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
+        {
+            Box::pin(async { Err(SigilError::Internal("veil unreachable".into())) })
+        }
+
+        fn search(
+            &self,
+            _query: &str,
+            _field: Option<&str>,
+            _limit: Option<usize>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Vec<(String, f64)>, SigilError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Ok(vec![]) })
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_fails_if_veil_cleanup_fails() {
+        // If Veil blind index cleanup fails during delete, the operation should
+        // fail and the envelope should remain intact.
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store.clone());
+        registry.init().await.unwrap();
+
+        let schema = Schema {
+            name: "del-veil-fail".to_string(),
+            fields: vec![FieldDef {
+                name: "email".to_string(),
+                field_type: FieldType::String,
+                annotations: FieldAnnotations {
+                    pii: true,
+                    searchable: true,
+                    ..Default::default()
+                },
+            }],
+        };
+        registry.register(schema.clone()).await.unwrap();
+
+        // Create with working capabilities
+        let credentials = Arc::new(CredentialManager::new(
+            store.clone(),
+            PasswordPolicy::default(),
+        ));
+        let working_caps = Arc::new(Capabilities {
+            cipher: Some(Box::new(TestCipherOps)),
+            veil: Some(Box::new(TestVeilOps::new())),
+            ..Default::default()
+        });
+        let coord = WriteCoordinator::new(store.clone(), credentials.clone(), working_caps);
+
+        let mut fields = HashMap::new();
+        fields.insert("email".into(), serde_json::json!("user@test.com"));
+        coord
+            .create_envelope(&schema, "user1", &fields)
+            .await
+            .unwrap();
+
+        // Delete with failing Veil
+        let failing_caps = Arc::new(Capabilities {
+            cipher: Some(Box::new(TestCipherOps)),
+            veil: Some(Box::new(FailingVeilDeleteOps)),
+            ..Default::default()
+        });
+        let coord_del = WriteCoordinator::new(store.clone(), credentials, failing_caps);
+
+        let err = coord_del
+            .delete_envelope(&schema, "user1")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("blind index cleanup failed"),
+            "expected veil cleanup error, got: {err}"
+        );
+
+        // Envelope should still exist — delete was aborted before commit point
+        assert!(
+            coord_del.get_envelope(&schema, "user1").await.is_ok(),
+            "envelope should still exist after failed delete"
+        );
     }
 }
