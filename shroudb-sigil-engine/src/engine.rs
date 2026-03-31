@@ -399,12 +399,4 @@ impl<S: Store> SigilEngine<S> {
     pub async fn jwks(&self, schema_name: &str) -> Result<serde_json::Value, SigilError> {
         self.jwt.jwks(schema_name).await
     }
-
-    pub async fn verify_token(
-        &self,
-        schema_name: &str,
-        token: &str,
-    ) -> Result<serde_json::Value, SigilError> {
-        self.jwt.verify(schema_name, token).await
-    }
 }
