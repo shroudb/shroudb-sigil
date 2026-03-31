@@ -21,7 +21,7 @@ pub async fn run_tcp<S: Store + 'static>(
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     tracing::info!(
-        addr = %listener.local_addr().unwrap(),
+        addr = %listener.local_addr().expect("listener bound"),
         "sigil TCP server listening"
     );
 
