@@ -558,10 +558,18 @@ impl<S: Store> WriteCoordinator<S> {
         .await?;
 
         // Phase 2: Delete envelope record (commit point)
-        self.store
-            .delete(&envelopes_ns, entity_id.as_bytes())
-            .await
-            .map_err(|e| SigilError::Store(e.to_string()))?;
+        // If this fails, associated data (credentials, blind indexes, secrets,
+        // sessions) may already be partially deleted. The envelope still exists
+        // so a retry will succeed. Log at ERROR to surface the inconsistency.
+        if let Err(e) = self.store.delete(&envelopes_ns, entity_id.as_bytes()).await {
+            tracing::error!(
+                schema = schema_name,
+                entity_id,
+                error = %e,
+                "envelope delete failed after associated data cleanup — entity in degraded state, retry delete"
+            );
+            return Err(SigilError::Store(e.to_string()));
+        }
 
         Ok(())
     }
