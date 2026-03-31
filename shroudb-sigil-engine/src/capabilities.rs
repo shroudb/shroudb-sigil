@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use shroudb_acl::PolicyEvaluator;
+use shroudb_chronicle_core::ops::ChronicleOps;
 use shroudb_crypto::SensitiveBytes;
 use shroudb_sigil_core::error::SigilError;
 
@@ -48,4 +49,5 @@ pub struct Capabilities {
     pub veil: Option<Box<dyn VeilOps>>,
     pub keep: Option<Box<dyn KeepOps>>,
     pub sentry: Option<Arc<dyn PolicyEvaluator>>,
+    pub chronicle: Option<Arc<dyn ChronicleOps>>,
 }

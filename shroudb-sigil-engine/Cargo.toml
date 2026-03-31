@@ -11,6 +11,7 @@ publish.workspace = true
 shroudb-sigil-core.workspace = true
 shroudb-store.workspace = true
 shroudb-acl.workspace = true
+shroudb-chronicle-core.workspace = true
 shroudb-cipher-client.workspace = true
 shroudb-crypto.workspace = true
 shroudb-keep-client.workspace = true

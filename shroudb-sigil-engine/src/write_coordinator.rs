@@ -48,6 +48,27 @@ impl<S: Store> WriteCoordinator<S> {
         }
     }
 
+    async fn emit_audit_event(&self, operation: &str, resource: &str, actor: &str) {
+        let Some(chronicle) = &self.capabilities.chronicle else {
+            return;
+        };
+        let event = shroudb_chronicle_core::event::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            correlation_id: None,
+            timestamp: now_secs() * 1000,
+            engine: shroudb_chronicle_core::event::Engine::Sigil,
+            operation: operation.to_string(),
+            resource: resource.to_string(),
+            result: shroudb_chronicle_core::event::EventResult::Ok,
+            duration_ms: 0,
+            actor: actor.to_string(),
+            metadata: Default::default(),
+        };
+        if let Err(e) = chronicle.record(event).await {
+            tracing::warn!(error = %e, "failed to emit audit event");
+        }
+    }
+
     async fn check_policy(
         &self,
         entity_id: &str,
@@ -192,6 +213,13 @@ impl<S: Store> WriteCoordinator<S> {
             self.rollback(completed_ops).await;
             return Err(SigilError::Store(e.to_string()));
         }
+
+        self.emit_audit_event(
+            "create",
+            &format!("{}/{}", schema.name, entity_id),
+            entity_id,
+        )
+        .await;
 
         Ok(record)
     }
@@ -401,6 +429,13 @@ impl<S: Store> WriteCoordinator<S> {
             return Err(SigilError::Store(e.to_string()));
         }
 
+        self.emit_audit_event(
+            "update",
+            &format!("{}/{}", schema.name, entity_id),
+            entity_id,
+        )
+        .await;
+
         Ok(record)
     }
 
@@ -466,6 +501,13 @@ impl<S: Store> WriteCoordinator<S> {
                 }
             }
         }
+
+        self.emit_audit_event(
+            "delete",
+            &format!("{}/{}", schema_name, entity_id),
+            entity_id,
+        )
+        .await;
 
         Ok(())
     }
