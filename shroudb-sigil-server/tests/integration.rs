@@ -1423,3 +1423,277 @@ index = true
     let login: serde_json::Value = resp.json().await.unwrap();
     assert!(login["access_token"].is_string());
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Delete with searchable PII: blind index cleanup
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn delete_envelope_cleans_up_blind_index() {
+    let cipher = match TestCipherServer::start().await {
+        Some(c) => c,
+        None => {
+            eprintln!("skipping: cipher binary not found");
+            return;
+        }
+    };
+    cipher.create_keyring("sigil-pii", "aes-256-gcm").await;
+
+    let veil = match TestVeilServer::start().await {
+        Some(v) => v,
+        None => {
+            eprintln!("skipping: veil binary not found");
+            return;
+        }
+    };
+    veil.create_index("sigil-search").await;
+
+    let server = TestServer::start_with_config(TestServerConfig {
+        cipher: Some(TestCipherConfig {
+            addr: cipher.tcp_addr.clone(),
+            keyring: "sigil-pii".to_string(),
+        }),
+        veil: Some(TestVeilConfig {
+            addr: veil.tcp_addr.clone(),
+            index: "sigil-search".to_string(),
+        }),
+        ..Default::default()
+    })
+    .await
+    .expect("sigil server failed to start");
+
+    let client = reqwest::Client::new();
+
+    // Register schema with searchable PII
+    client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "cleanup-test",
+            "fields": [
+                {"name": "email", "field_type": "string", "annotations": {"pii": true, "searchable": true}},
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Create user with searchable email
+    let resp = client
+        .post(server.http_url("/sigil/cleanup-test/users"))
+        .json(&serde_json::json!({
+            "fields": {
+                "entity_id": "victim",
+                "email": "unique-cleanup-test@example.com",
+                "password": "test12345678"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Verify blind index entry exists via Veil search
+    let mut veil_client = shroudb_veil_client::VeilClient::connect(&veil.tcp_addr)
+        .await
+        .unwrap();
+    let results = veil_client
+        .search("sigil-search", "unique-cleanup-test", None, None, None)
+        .await
+        .unwrap();
+    assert!(
+        results.matched > 0,
+        "blind index entry should exist after create"
+    );
+
+    // Delete the user
+    let resp = client
+        .delete(server.http_url("/sigil/cleanup-test/users/victim"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "delete failed: {:?}", resp.text().await);
+
+    // Verify blind index entry was cleaned up
+    let results = veil_client
+        .search("sigil-search", "unique-cleanup-test", None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        results.matched, 0,
+        "blind index entry should be cleaned up after delete"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PII field redaction verification
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn pii_fields_never_expose_ciphertext() {
+    let cipher = match TestCipherServer::start().await {
+        Some(c) => c,
+        None => {
+            eprintln!("skipping: cipher binary not found");
+            return;
+        }
+    };
+    cipher.create_keyring("sigil-pii", "aes-256-gcm").await;
+
+    let server = TestServer::start_with_config(TestServerConfig {
+        cipher: Some(TestCipherConfig {
+            addr: cipher.tcp_addr.clone(),
+            keyring: "sigil-pii".to_string(),
+        }),
+        ..Default::default()
+    })
+    .await
+    .expect("sigil server failed to start");
+
+    let client = reqwest::Client::new();
+
+    client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "redact-test",
+            "fields": [
+                {"name": "email", "field_type": "string", "annotations": {"pii": true}},
+                {"name": "ssn", "field_type": "string", "annotations": {"pii": true}},
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+                {"name": "name", "field_type": "string"}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .post(server.http_url("/sigil/redact-test/users"))
+        .json(&serde_json::json!({
+            "fields": {
+                "entity_id": "alice",
+                "email": "alice@example.com",
+                "ssn": "123-45-6789",
+                "password": "test12345678",
+                "name": "Alice"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(server.http_url("/sigil/redact-test/users/alice"))
+        .send()
+        .await
+        .unwrap();
+    let user: serde_json::Value = resp.json().await.unwrap();
+
+    // PII fields must show [encrypted], never ciphertext
+    assert_eq!(user["fields"]["email"], "[encrypted]");
+    assert_eq!(user["fields"]["ssn"], "[encrypted]");
+    // Non-PII field is plaintext
+    assert_eq!(user["fields"]["name"], "Alice");
+    // Credential field must not appear at all
+    assert!(user["fields"].get("password").is_none());
+
+    // The response body as a whole must not contain any plaintext PII
+    let body = serde_json::to_string(&user).unwrap();
+    assert!(!body.contains("alice@example.com"));
+    assert!(!body.contains("123-45-6789"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Update with searchable PII: blind index updated
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn update_searchable_pii_updates_blind_index() {
+    let cipher = match TestCipherServer::start().await {
+        Some(c) => c,
+        None => {
+            eprintln!("skipping: cipher binary not found");
+            return;
+        }
+    };
+    cipher.create_keyring("sigil-pii", "aes-256-gcm").await;
+
+    let veil = match TestVeilServer::start().await {
+        Some(v) => v,
+        None => {
+            eprintln!("skipping: veil binary not found");
+            return;
+        }
+    };
+    veil.create_index("sigil-search").await;
+
+    let server = TestServer::start_with_config(TestServerConfig {
+        cipher: Some(TestCipherConfig {
+            addr: cipher.tcp_addr.clone(),
+            keyring: "sigil-pii".to_string(),
+        }),
+        veil: Some(TestVeilConfig {
+            addr: veil.tcp_addr.clone(),
+            index: "sigil-search".to_string(),
+        }),
+        ..Default::default()
+    })
+    .await
+    .expect("sigil server failed to start");
+
+    let client = reqwest::Client::new();
+
+    client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "update-search-test",
+            "fields": [
+                {"name": "email", "field_type": "string", "annotations": {"pii": true, "searchable": true}},
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Create user
+    let resp = client
+        .post(server.http_url("/sigil/update-search-test/users"))
+        .json(&serde_json::json!({
+            "fields": {
+                "entity_id": "bob",
+                "email": "old-email-unique@example.com",
+                "password": "test12345678"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Verify old email is searchable
+    let mut veil_client = shroudb_veil_client::VeilClient::connect(&veil.tcp_addr)
+        .await
+        .unwrap();
+    let results = veil_client
+        .search("sigil-search", "old-email-unique", None, None, None)
+        .await
+        .unwrap();
+    assert!(results.matched > 0, "old email should be searchable");
+
+    // Update email
+    let resp = client
+        .patch(server.http_url("/sigil/update-search-test/users/bob"))
+        .json(&serde_json::json!({"fields": {"email": "new-email-unique@example.com"}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Verify new email is searchable
+    let results = veil_client
+        .search("sigil-search", "new-email-unique", None, None, None)
+        .await
+        .unwrap();
+    assert!(results.matched > 0, "new email should be searchable");
+}
