@@ -68,7 +68,10 @@ impl RateLimitState {
 
     /// Try to acquire one token for the given IP. Returns true if allowed.
     fn try_acquire(&self, ip: IpAddr) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = Instant::now();
 
         // Prune stale buckets every 60 seconds.
