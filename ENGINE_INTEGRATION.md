@@ -61,16 +61,19 @@ pub trait VeilOps: Send + Sync {
 
 ```rust
 pub trait KeepOps: Send + Sync {
-    fn store_secret(&self, key: &[u8], value: &[u8]) -> Pin<Box<dyn Future<Output = Result<u64, SigilError>> + Send + '_>>;
-    fn get_secret(&self, key: &[u8]) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SigilError>> + Send + '_>>;
+    fn store_secret(&self, path: &str, value: &[u8]) -> BoxFut<'_, u64>;
+    fn delete_secret(&self, path: &str) -> BoxFut<'_, ()>;
 }
 ```
 
 **What the Keep v1 team needs to implement:**
 1. A struct that implements `KeepOps` by calling Keep's secret storage API
-2. Secrets are stored under a key derived from `{schema}/{user_id}/{field_name}`
+2. Secrets are stored under a path derived from `{schema}/{entity_id}/{field_name}`
 
-**Write path:** `USER CREATE` with `secret` field → `keep.store_secret(key, value)`.
+**Write path:** `ENVELOPE CREATE` with `secret` field → `keep.store_secret(path, value)`.
+**Rollback path:** On failure after secret storage → `keep.delete_secret(path)`.
+
+Sigil is an opaque envelope store — it never reads secrets back. Applications retrieve secrets via Keep or Courier directly.
 
 **Read path:** `USER GET` with `secret` field → `keep.get_secret(key)` → value returned.
 

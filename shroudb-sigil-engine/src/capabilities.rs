@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use shroudb_acl::PolicyEvaluator;
+use shroudb_crypto::SensitiveBytes;
 use shroudb_sigil_core::error::SigilError;
 
 /// Shorthand for a pinned boxed future.
@@ -10,7 +11,7 @@ type BoxFut<'a, T> =
 /// Trait for Cipher operations (encrypt/decrypt PII fields).
 pub trait CipherOps: Send + Sync {
     fn encrypt(&self, plaintext: &[u8], context: Option<&str>) -> BoxFut<'_, String>;
-    fn decrypt(&self, ciphertext: &str, context: Option<&str>) -> BoxFut<'_, Vec<u8>>;
+    fn decrypt(&self, ciphertext: &str, context: Option<&str>) -> BoxFut<'_, SensitiveBytes>;
 }
 
 /// Trait for Veil operations (blind index for searchable encrypted fields).
@@ -29,9 +30,12 @@ pub trait VeilOps: Send + Sync {
 ///
 /// Secrets are stored under a path string and versioned automatically.
 /// Values are raw bytes (base64 encoding handled internally).
+///
+/// Sigil is an opaque envelope store — it never reads secrets back.
+/// Applications retrieve secrets via Keep or Courier directly.
 pub trait KeepOps: Send + Sync {
     fn store_secret(&self, path: &str, value: &[u8]) -> BoxFut<'_, u64>;
-    fn get_secret(&self, path: &str) -> BoxFut<'_, Vec<u8>>;
+    fn delete_secret(&self, path: &str) -> BoxFut<'_, ()>;
 }
 
 /// Engine capabilities provided at construction time.

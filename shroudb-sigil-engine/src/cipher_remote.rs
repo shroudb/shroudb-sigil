@@ -68,7 +68,8 @@ impl CipherOps for RemoteCipherOps {
         &self,
         ciphertext: &str,
         context: Option<&str>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SigilError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<shroudb_crypto::SensitiveBytes, SigilError>> + Send + '_>>
+    {
         let ciphertext_owned = ciphertext.to_string();
         let context_owned = context.map(String::from);
         Box::pin(async move {
@@ -78,8 +79,9 @@ impl CipherOps for RemoteCipherOps {
                 .decrypt(&self.keyring, &ciphertext_owned, ctx_ref)
                 .await
                 .map_err(|e| SigilError::Crypto(format!("cipher decrypt failed: {e}")))?;
-            base64_decode(&result.plaintext)
-                .map_err(|e| SigilError::Crypto(format!("base64 decode failed: {e}")))
+            let bytes = base64_decode(&result.plaintext)
+                .map_err(|e| SigilError::Crypto(format!("base64 decode failed: {e}")))?;
+            Ok(shroudb_crypto::SensitiveBytes::new(bytes))
         })
     }
 }

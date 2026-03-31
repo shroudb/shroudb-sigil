@@ -53,19 +53,18 @@ impl KeepOps for RemoteKeepOps {
         })
     }
 
-    fn get_secret(
+    fn delete_secret(
         &self,
         path: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SigilError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), SigilError>> + Send + '_>> {
         let path = path.to_string();
         Box::pin(async move {
             let mut client = self.client.lock().await;
-            let result = client
-                .get(&path, None)
+            client
+                .delete(&path)
                 .await
-                .map_err(|e| SigilError::Internal(format!("keep get failed: {e}")))?;
-            base64_decode(&result.value)
-                .map_err(|e| SigilError::Internal(format!("base64 decode failed: {e}")))
+                .map_err(|e| SigilError::Internal(format!("keep delete failed: {e}")))?;
+            Ok(())
         })
     }
 }
@@ -73,9 +72,4 @@ impl KeepOps for RemoteKeepOps {
 fn base64_encode(data: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(data)
-}
-
-fn base64_decode(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.decode(data)
 }

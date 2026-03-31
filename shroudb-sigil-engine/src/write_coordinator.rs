@@ -8,6 +8,8 @@ use shroudb_sigil_core::routing::{FieldTreatment, route_field};
 use shroudb_sigil_core::schema::Schema;
 use shroudb_store::Store;
 
+use zeroize::Zeroize;
+
 use crate::capabilities::Capabilities;
 use crate::credential::CredentialManager;
 
@@ -368,9 +370,11 @@ impl<S: Store> WriteCoordinator<S> {
                         .keep
                         .as_ref()
                         .ok_or_else(|| SigilError::CapabilityMissing("keep".into()))?;
-                    let secret_bytes = value.to_string().into_bytes();
+                    let mut secret_bytes = value.to_string().into_bytes();
                     let key = format!("{}/{}/{}", schema.name, entity_id, field_name);
-                    keep.store_secret(&key, &secret_bytes).await?;
+                    let result = keep.store_secret(&key, &secret_bytes).await;
+                    secret_bytes.zeroize();
+                    result?;
                     Ok(Some(CompensatingOp::Keep { path: key }))
                 }
                 FieldTreatment::Credential => unreachable!(),
@@ -561,9 +565,11 @@ impl<S: Store> WriteCoordinator<S> {
                     .as_ref()
                     .ok_or_else(|| SigilError::CapabilityMissing("keep".into()))?;
 
-                let secret_bytes = value.to_string().into_bytes();
+                let mut secret_bytes = value.to_string().into_bytes();
                 let key = format!("{schema_name}/{entity_id}/{field_name}");
-                keep.store_secret(&key, &secret_bytes).await?;
+                let result = keep.store_secret(&key, &secret_bytes).await;
+                secret_bytes.zeroize();
+                result?;
 
                 Ok(FieldWriteResult {
                     compensating_op: Some(CompensatingOp::Keep { path: key }),
@@ -605,12 +611,15 @@ impl<S: Store> WriteCoordinator<S> {
                     }
                 }
                 CompensatingOp::Keep { path } => {
-                    // Best-effort: Keep doesn't expose a delete-by-path through KeepOps.
-                    // Log the orphaned secret path for manual cleanup.
-                    tracing::warn!(
-                        path = %path,
-                        "orphaned secret in Keep (no delete API in KeepOps)"
-                    );
+                    if let Some(keep) = &self.capabilities.keep
+                        && let Err(e) = keep.delete_secret(&path).await
+                    {
+                        tracing::error!(
+                            path = %path,
+                            error = %e,
+                            "compensating keep DELETE failed during rollback"
+                        );
+                    }
                 }
             }
         }
@@ -866,6 +875,193 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("cipher"));
+    }
+
+    /// In-memory KeepOps for testing rollback behavior.
+    struct TestKeepOps {
+        secrets: Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>,
+    }
+
+    impl TestKeepOps {
+        fn new() -> Self {
+            Self {
+                secrets: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            }
+        }
+    }
+
+    impl crate::capabilities::KeepOps for TestKeepOps {
+        fn store_secret(
+            &self,
+            path: &str,
+            value: &[u8],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, SigilError>> + Send + '_>>
+        {
+            let path = path.to_string();
+            let value = value.to_vec();
+            Box::pin(async move {
+                self.secrets.lock().unwrap().insert(path, value);
+                Ok(1)
+            })
+        }
+
+        fn delete_secret(
+            &self,
+            path: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
+        {
+            let path = path.to_string();
+            Box::pin(async move {
+                self.secrets.lock().unwrap().remove(&path);
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn rollback_keep_secret_on_subsequent_failure() {
+        // Schema: secret field first, then PII field (no cipher → fails).
+        // Verify: secret stored by Keep is deleted during rollback.
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store.clone());
+        registry.init().await.unwrap();
+
+        let schema = Schema {
+            name: "keep-rollback".to_string(),
+            fields: vec![
+                FieldDef {
+                    name: "api_key".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        secret: true,
+                        ..Default::default()
+                    },
+                },
+                FieldDef {
+                    name: "email".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        pii: true,
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+        registry.register(schema.clone()).await.unwrap();
+
+        let keep = TestKeepOps::new();
+        let keep_secrets = keep.secrets.clone();
+        let capabilities = Arc::new(Capabilities {
+            keep: Some(Box::new(keep)),
+            ..Default::default() // no cipher — will fail on PII field
+        });
+
+        let credentials = Arc::new(CredentialManager::new(
+            store.clone(),
+            PasswordPolicy::default(),
+        ));
+        let coord = WriteCoordinator::new(store.clone(), credentials, capabilities);
+
+        let mut fields = HashMap::new();
+        fields.insert("api_key".into(), serde_json::json!("sk-secret-key-12345"));
+        fields.insert("email".into(), serde_json::json!("user@example.com"));
+
+        // Create should fail on the PII field (no cipher)
+        let err = coord
+            .create_envelope(&schema, "user1", &fields)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("cipher"),
+            "expected cipher missing error, got: {err}"
+        );
+
+        // The secret should have been rolled back (delete_secret called)
+        assert!(
+            keep_secrets.lock().unwrap().is_empty(),
+            "secret should have been deleted during rollback, but Keep still contains: {:?}",
+            keep_secrets.lock().unwrap().keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_credential_and_keep_on_subsequent_failure() {
+        // Schema: credential + secret + PII. No cipher → fails on PII.
+        // Verify: both credential and secret are rolled back.
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store.clone());
+        registry.init().await.unwrap();
+
+        let schema = Schema {
+            name: "multi-rollback".to_string(),
+            fields: vec![
+                FieldDef {
+                    name: "password".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        credential: true,
+                        ..Default::default()
+                    },
+                },
+                FieldDef {
+                    name: "api_key".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        secret: true,
+                        ..Default::default()
+                    },
+                },
+                FieldDef {
+                    name: "ssn".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        pii: true,
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+        registry.register(schema.clone()).await.unwrap();
+
+        let keep = TestKeepOps::new();
+        let keep_secrets = keep.secrets.clone();
+        let capabilities = Arc::new(Capabilities {
+            keep: Some(Box::new(keep)),
+            ..Default::default()
+        });
+
+        let credentials = Arc::new(CredentialManager::new(
+            store.clone(),
+            PasswordPolicy::default(),
+        ));
+        let coord = WriteCoordinator::new(store.clone(), credentials, capabilities);
+
+        let mut fields = HashMap::new();
+        fields.insert("password".into(), serde_json::json!("hunter2-longpassword"));
+        fields.insert("api_key".into(), serde_json::json!("sk-prod-abc"));
+        fields.insert("ssn".into(), serde_json::json!("123-45-6789"));
+
+        let err = coord
+            .create_envelope(&schema, "user1", &fields)
+            .await
+            .unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("cipher"),
+            "expected cipher missing error, got: {err_msg}"
+        );
+
+        // Credential should be rolled back
+        let cred_ns = "sigil.multi-rollback.credentials";
+        let cred_key = credential_store_key("user1", "password");
+        let result = store.get(cred_ns, cred_key.as_bytes(), None).await;
+        assert!(result.is_err(), "credential should have been rolled back");
+
+        // Secret should be rolled back
+        assert!(
+            keep_secrets.lock().unwrap().is_empty(),
+            "secret should have been deleted during rollback"
+        );
     }
 
     #[tokio::test]
