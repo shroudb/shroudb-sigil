@@ -1720,4 +1720,102 @@ mod tests {
             "envelope should be deleted"
         );
     }
+
+    // ── Concurrency tests ───────────────────────────────────────
+
+    /// KeepOps that sleeps to simulate network latency.
+    struct SlowKeepOps;
+
+    impl crate::capabilities::KeepOps for SlowKeepOps {
+        fn store_secret(
+            &self,
+            _path: &str,
+            _value: &[u8],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, SigilError>> + Send + '_>>
+        {
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                Ok(1)
+            })
+        }
+
+        fn delete_secret(
+            &self,
+            _path: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_creates_do_not_serialize_on_capabilities() {
+        // Verify that concurrent envelope creates with slow capabilities
+        // run in parallel, not serialized through a single connection.
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store.clone());
+        registry.init().await.unwrap();
+
+        let schema = Schema {
+            name: "concurrency-test".to_string(),
+            fields: vec![
+                FieldDef {
+                    name: "api_key".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        secret: true,
+                        ..Default::default()
+                    },
+                },
+                FieldDef {
+                    name: "org".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        index: true,
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+        registry.register(schema.clone()).await.unwrap();
+
+        let capabilities = Arc::new(Capabilities {
+            keep: Some(Box::new(SlowKeepOps)),
+            ..Default::default()
+        });
+        let credentials = Arc::new(CredentialManager::new(
+            store.clone(),
+            PasswordPolicy::default(),
+        ));
+        let coord = Arc::new(WriteCoordinator::new(
+            store.clone(),
+            credentials,
+            capabilities,
+        ));
+
+        let start = std::time::Instant::now();
+        let mut handles = Vec::new();
+
+        for i in 0..5 {
+            let c = coord.clone();
+            let s = schema.clone();
+            handles.push(tokio::spawn(async move {
+                let mut fields = HashMap::new();
+                fields.insert("api_key".into(), serde_json::json!(format!("sk-{i}")));
+                fields.insert("org".into(), serde_json::json!(format!("org-{i}")));
+                c.create_envelope(&s, &format!("user-{i}"), &fields).await
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap().unwrap();
+        }
+
+        let elapsed = start.elapsed();
+        // 5 creates with 50ms Keep each. Serial: >= 250ms. Parallel: ~50ms.
+        assert!(
+            elapsed.as_millis() < 200,
+            "concurrent creates appear serialized: {elapsed:?} for 5 creates with 50ms Keep"
+        );
+    }
 }

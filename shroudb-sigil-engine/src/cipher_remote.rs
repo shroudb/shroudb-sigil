@@ -2,29 +2,25 @@ use std::future::Future;
 use std::pin::Pin;
 
 use shroudb_cipher_client::CipherClient;
-use tokio::sync::Mutex;
 
 use crate::capabilities::CipherOps;
 use shroudb_sigil_core::error::SigilError;
 
 /// CipherOps implementation backed by a remote Cipher server via TCP.
 ///
-/// Wraps `CipherClient` with a configured keyring name. All PII field
-/// encryption/decryption routes through this keyring.
+/// Creates a fresh `CipherClient` connection per call to allow concurrent
+/// operations without serializing through a single connection.
 pub struct RemoteCipherOps {
-    client: Mutex<CipherClient>,
+    addr: String,
+    auth_token: Option<String>,
     keyring: String,
 }
 
 impl RemoteCipherOps {
-    pub fn new(client: CipherClient, keyring: String) -> Self {
-        Self {
-            client: Mutex::new(client),
-            keyring,
-        }
-    }
-
-    /// Connect to a Cipher server and optionally authenticate.
+    /// Connect to a Cipher server and verify connectivity.
+    ///
+    /// Establishes an initial connection to validate the address and auth
+    /// token, then stores the parameters for per-request connections.
     pub async fn connect(
         addr: &str,
         keyring: String,
@@ -41,7 +37,27 @@ impl RemoteCipherOps {
                 .map_err(|e| SigilError::Internal(format!("cipher auth failed: {e}")))?;
         }
 
-        Ok(Self::new(client, keyring))
+        Ok(Self {
+            addr: addr.to_string(),
+            auth_token: auth_token.map(String::from),
+            keyring,
+        })
+    }
+
+    /// Create a fresh client connection, authenticating if configured.
+    async fn fresh_client(&self) -> Result<CipherClient, SigilError> {
+        let mut client = CipherClient::connect(&self.addr)
+            .await
+            .map_err(|e| SigilError::Internal(format!("cipher connect failed: {e}")))?;
+
+        if let Some(ref token) = self.auth_token {
+            client
+                .auth(token)
+                .await
+                .map_err(|e| SigilError::Internal(format!("cipher auth failed: {e}")))?;
+        }
+
+        Ok(client)
     }
 }
 
@@ -55,7 +71,7 @@ impl CipherOps for RemoteCipherOps {
         let context_owned = context.map(String::from);
         Box::pin(async move {
             let ctx_ref = context_owned.as_deref();
-            let mut client = self.client.lock().await;
+            let mut client = self.fresh_client().await?;
             let result = client
                 .encrypt(&self.keyring, &b64, ctx_ref, None, false)
                 .await
@@ -74,7 +90,7 @@ impl CipherOps for RemoteCipherOps {
         let context_owned = context.map(String::from);
         Box::pin(async move {
             let ctx_ref = context_owned.as_deref();
-            let mut client = self.client.lock().await;
+            let mut client = self.fresh_client().await?;
             let result = client
                 .decrypt(&self.keyring, &ciphertext_owned, ctx_ref)
                 .await

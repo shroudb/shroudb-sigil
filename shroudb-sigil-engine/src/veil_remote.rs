@@ -2,28 +2,25 @@ use std::future::Future;
 use std::pin::Pin;
 
 use shroudb_veil_client::VeilClient;
-use tokio::sync::Mutex;
 
 use crate::capabilities::VeilOps;
 use shroudb_sigil_core::error::SigilError;
 
 /// VeilOps implementation backed by a remote Veil server via TCP.
 ///
-/// Wraps `VeilClient` with a configured index name. All searchable PII
-/// field operations route through this index.
+/// Creates a fresh `VeilClient` connection per call to allow concurrent
+/// operations without serializing through a single connection.
 pub struct RemoteVeilOps {
-    client: Mutex<VeilClient>,
+    addr: String,
+    auth_token: Option<String>,
     index: String,
 }
 
 impl RemoteVeilOps {
-    pub fn new(client: VeilClient, index: String) -> Self {
-        Self {
-            client: Mutex::new(client),
-            index,
-        }
-    }
-
+    /// Connect to a Veil server and verify connectivity.
+    ///
+    /// Establishes an initial connection to validate the address and auth
+    /// token, then stores the parameters for per-request connections.
     pub async fn connect(
         addr: &str,
         index: String,
@@ -40,7 +37,27 @@ impl RemoteVeilOps {
                 .map_err(|e| SigilError::Internal(format!("veil auth failed: {e}")))?;
         }
 
-        Ok(Self::new(client, index))
+        Ok(Self {
+            addr: addr.to_string(),
+            auth_token: auth_token.map(String::from),
+            index,
+        })
+    }
+
+    /// Create a fresh client connection, authenticating if configured.
+    async fn fresh_client(&self) -> Result<VeilClient, SigilError> {
+        let mut client = VeilClient::connect(&self.addr)
+            .await
+            .map_err(|e| SigilError::Internal(format!("veil connect failed: {e}")))?;
+
+        if let Some(ref token) = self.auth_token {
+            client
+                .auth(token)
+                .await
+                .map_err(|e| SigilError::Internal(format!("veil auth failed: {e}")))?;
+        }
+
+        Ok(client)
     }
 }
 
@@ -55,7 +72,7 @@ impl VeilOps for RemoteVeilOps {
         let entry_id = entry_id.to_string();
         let field = field.map(String::from);
         Box::pin(async move {
-            let mut client = self.client.lock().await;
+            let mut client = self.fresh_client().await?;
             client
                 .put(&self.index, &entry_id, &b64, field.as_deref())
                 .await
@@ -70,7 +87,7 @@ impl VeilOps for RemoteVeilOps {
     ) -> Pin<Box<dyn Future<Output = Result<(), SigilError>> + Send + '_>> {
         let entry_id = entry_id.to_string();
         Box::pin(async move {
-            let mut client = self.client.lock().await;
+            let mut client = self.fresh_client().await?;
             client
                 .delete(&self.index, &entry_id)
                 .await
@@ -88,7 +105,7 @@ impl VeilOps for RemoteVeilOps {
         let query = query.to_string();
         let field = field.map(String::from);
         Box::pin(async move {
-            let mut client = self.client.lock().await;
+            let mut client = self.fresh_client().await?;
             let result = client
                 .search(
                     &self.index,

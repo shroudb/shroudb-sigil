@@ -2,23 +2,24 @@ use std::future::Future;
 use std::pin::Pin;
 
 use shroudb_keep_client::KeepClient;
-use tokio::sync::Mutex;
 
 use crate::capabilities::KeepOps;
 use shroudb_sigil_core::error::SigilError;
 
 /// KeepOps implementation backed by a remote Keep server via TCP.
+///
+/// Creates a fresh `KeepClient` connection per call to allow concurrent
+/// operations without serializing through a single connection.
 pub struct RemoteKeepOps {
-    client: Mutex<KeepClient>,
+    addr: String,
+    auth_token: Option<String>,
 }
 
 impl RemoteKeepOps {
-    pub fn new(client: KeepClient) -> Self {
-        Self {
-            client: Mutex::new(client),
-        }
-    }
-
+    /// Connect to a Keep server and verify connectivity.
+    ///
+    /// Establishes an initial connection to validate the address and auth
+    /// token, then stores the parameters for per-request connections.
     pub async fn connect(addr: &str, auth_token: Option<&str>) -> Result<Self, SigilError> {
         let mut client = KeepClient::connect(addr)
             .await
@@ -31,7 +32,26 @@ impl RemoteKeepOps {
                 .map_err(|e| SigilError::Internal(format!("keep auth failed: {e}")))?;
         }
 
-        Ok(Self::new(client))
+        Ok(Self {
+            addr: addr.to_string(),
+            auth_token: auth_token.map(String::from),
+        })
+    }
+
+    /// Create a fresh client connection, authenticating if configured.
+    async fn fresh_client(&self) -> Result<KeepClient, SigilError> {
+        let mut client = KeepClient::connect(&self.addr)
+            .await
+            .map_err(|e| SigilError::Internal(format!("keep connect failed: {e}")))?;
+
+        if let Some(ref token) = self.auth_token {
+            client
+                .auth(token)
+                .await
+                .map_err(|e| SigilError::Internal(format!("keep auth failed: {e}")))?;
+        }
+
+        Ok(client)
     }
 }
 
@@ -44,7 +64,7 @@ impl KeepOps for RemoteKeepOps {
         let b64 = base64_encode(value);
         let path = path.to_string();
         Box::pin(async move {
-            let mut client = self.client.lock().await;
+            let mut client = self.fresh_client().await?;
             let result = client
                 .put(&path, &b64)
                 .await
@@ -59,7 +79,7 @@ impl KeepOps for RemoteKeepOps {
     ) -> Pin<Box<dyn Future<Output = Result<(), SigilError>> + Send + '_>> {
         let path = path.to_string();
         Box::pin(async move {
-            let mut client = self.client.lock().await;
+            let mut client = self.fresh_client().await?;
             client
                 .delete(&path)
                 .await
