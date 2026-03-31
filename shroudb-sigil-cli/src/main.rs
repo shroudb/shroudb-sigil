@@ -79,7 +79,7 @@ async fn execute(client: &mut SigilClient, args: &[&str]) -> anyhow::Result<()> 
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
-                        "user_id": record.user_id,
+                        "entity_id": record.entity_id,
                         "fields": record.fields,
                     }))?
                 );
@@ -94,7 +94,7 @@ async fn execute(client: &mut SigilClient, args: &[&str]) -> anyhow::Result<()> 
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
-                        "user_id": record.user_id,
+                        "entity_id": record.entity_id,
                         "fields": record.fields,
                     }))?
                 );
@@ -107,7 +107,7 @@ async fn execute(client: &mut SigilClient, args: &[&str]) -> anyhow::Result<()> 
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
-                        "user_id": record.user_id,
+                        "entity_id": record.entity_id,
                         "fields": record.fields,
                     }))?
                 );

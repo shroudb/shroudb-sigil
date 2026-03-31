@@ -47,7 +47,7 @@ impl Default for PasswordPolicy {
 /// after successful verification — the user never knows.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialRecord {
-    pub user_id: String,
+    pub entity_id: String,
     /// Hash in PHC string format or bcrypt format.
     pub hash: String,
     /// Algorithm detected from the hash (for rehash decisions).

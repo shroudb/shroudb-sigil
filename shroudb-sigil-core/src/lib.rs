@@ -4,6 +4,7 @@
 
 pub mod credential;
 pub mod error;
+pub mod record;
 pub mod routing;
 pub mod schema;
 pub mod session;

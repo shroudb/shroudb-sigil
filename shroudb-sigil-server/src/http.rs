@@ -89,7 +89,7 @@ pub fn router(
         .route("/sigil/{schema}/users/{id}", delete(user_delete))
         .route("/sigil/{schema}/sessions", delete(session_revoke_body))
         .route("/sigil/{schema}/sessions/refresh", post(session_refresh))
-        .route("/sigil/{schema}/sessions/{user_id}", get(session_list))
+        .route("/sigil/{schema}/sessions/{entity_id}", get(session_list))
         .route("/sigil/{schema}/.well-known/jwks.json", get(jwks))
         .route("/sigil/health", get(health))
         .with_state(state);
@@ -233,21 +233,21 @@ async fn user_create(
     Path(schema): Path<String>,
     Json(body): Json<CreateUserBody>,
 ) -> Response {
-    let user_id = body
+    let entity_id = body
         .fields
-        .get("user_id")
+        .get("entity_id")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    if user_id.is_empty() {
-        return err_response(StatusCode::BAD_REQUEST, "user_id required in fields");
+    if entity_id.is_empty() {
+        return err_response(StatusCode::BAD_REQUEST, "entity_id required in fields");
     }
     let mut fields = body.fields;
-    fields.remove("user_id");
+    fields.remove("entity_id");
 
     let cmd = SigilCommand::UserCreate {
         schema,
-        user_id,
+        user_id: entity_id,
         fields,
     };
     match run_command(&state, &headers, cmd).await {
@@ -262,21 +262,21 @@ async fn user_import(
     Path(schema): Path<String>,
     Json(body): Json<CreateUserBody>,
 ) -> Response {
-    let user_id = body
+    let entity_id = body
         .fields
-        .get("user_id")
+        .get("entity_id")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    if user_id.is_empty() {
-        return err_response(StatusCode::BAD_REQUEST, "user_id required in fields");
+    if entity_id.is_empty() {
+        return err_response(StatusCode::BAD_REQUEST, "entity_id required in fields");
     }
     let mut fields = body.fields;
-    fields.remove("user_id");
+    fields.remove("entity_id");
 
     let cmd = SigilCommand::UserImport {
         schema,
-        user_id,
+        user_id: entity_id,
         fields,
     };
     match run_command(&state, &headers, cmd).await {
@@ -345,7 +345,7 @@ async fn user_delete(
 
 #[derive(serde::Deserialize)]
 struct VerifyBody {
-    user_id: String,
+    entity_id: String,
     password: String,
 }
 
@@ -357,7 +357,7 @@ async fn verify(
 ) -> Response {
     let cmd = SigilCommand::UserVerify {
         schema,
-        user_id: body.user_id,
+        user_id: body.entity_id,
         password: body.password,
     };
     match run_command(&state, &headers, cmd).await {
@@ -419,7 +419,7 @@ async fn session_login(
 
 #[derive(serde::Deserialize)]
 struct LoginBody {
-    user_id: String,
+    entity_id: String,
     password: String,
     #[serde(default)]
     metadata: Option<serde_json::Value>,
@@ -433,7 +433,7 @@ async fn session_create(
 ) -> Response {
     let cmd = SigilCommand::SessionCreate {
         schema,
-        user_id: body.user_id,
+        entity_id: body.entity_id,
         password: body.password,
         metadata: body.metadata,
     };
@@ -467,7 +467,7 @@ async fn session_refresh(
 #[derive(serde::Deserialize)]
 struct RevokeBody {
     refresh_token: Option<String>,
-    user_id: Option<String>,
+    entity_id: Option<String>,
 }
 
 async fn session_revoke_body(
@@ -478,10 +478,13 @@ async fn session_revoke_body(
 ) -> Response {
     let cmd = if let Some(token) = body.refresh_token {
         SigilCommand::SessionRevoke { schema, token }
-    } else if let Some(user_id) = body.user_id {
-        SigilCommand::SessionRevokeAll { schema, user_id }
+    } else if let Some(entity_id) = body.entity_id {
+        SigilCommand::SessionRevokeAll { schema, entity_id }
     } else {
-        return err_response(StatusCode::BAD_REQUEST, "refresh_token or user_id required");
+        return err_response(
+            StatusCode::BAD_REQUEST,
+            "refresh_token or entity_id required",
+        );
     };
     match run_command(&state, &headers, cmd).await {
         Ok(resp) => sigil_to_http(resp, StatusCode::OK),
@@ -492,7 +495,7 @@ async fn session_revoke_body(
 #[derive(serde::Deserialize)]
 struct SessionListPath {
     schema: String,
-    user_id: String,
+    entity_id: String,
 }
 
 async fn session_list(
@@ -502,7 +505,7 @@ async fn session_list(
 ) -> Response {
     let cmd = SigilCommand::SessionList {
         schema: path.schema,
-        user_id: path.user_id,
+        entity_id: path.entity_id,
     };
     match run_command(&state, &headers, cmd).await {
         Ok(resp) => sigil_to_http(resp, StatusCode::OK),
@@ -512,7 +515,7 @@ async fn session_list(
 
 #[derive(serde::Deserialize)]
 struct ChangePasswordBody {
-    user_id: String,
+    entity_id: String,
     old_password: String,
     new_password: String,
 }
@@ -525,7 +528,7 @@ async fn password_change(
 ) -> Response {
     let cmd = SigilCommand::PasswordChange {
         schema,
-        user_id: body.user_id,
+        user_id: body.entity_id,
         old_password: body.old_password,
         new_password: body.new_password,
     };
@@ -537,7 +540,7 @@ async fn password_change(
 
 #[derive(serde::Deserialize)]
 struct ResetPasswordBody {
-    user_id: String,
+    entity_id: String,
     new_password: String,
 }
 
@@ -549,7 +552,7 @@ async fn password_reset(
 ) -> Response {
     let cmd = SigilCommand::PasswordReset {
         schema,
-        user_id: body.user_id,
+        user_id: body.entity_id,
         new_password: body.new_password,
     };
     match run_command(&state, &headers, cmd).await {
@@ -560,7 +563,7 @@ async fn password_reset(
 
 #[derive(serde::Deserialize)]
 struct ImportPasswordBody {
-    user_id: String,
+    entity_id: String,
     hash: String,
 }
 
@@ -572,7 +575,7 @@ async fn password_import(
 ) -> Response {
     let cmd = SigilCommand::PasswordImport {
         schema,
-        user_id: body.user_id,
+        user_id: body.entity_id,
         hash: body.hash,
         metadata: None,
     };

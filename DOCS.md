@@ -66,7 +66,7 @@ SCHEMA REGISTER myapp {"fields":[...]}
 
 ### Validation rules
 
-- At most one `credential` field per schema
+- Multiple `credential` fields allowed (e.g., password + recovery_key)
 - `searchable` requires `pii`
 - `credential` and `pii` are mutually exclusive (credentials are hashed, not encrypted)
 - `credential` and `secret` are mutually exclusive
@@ -78,33 +78,42 @@ Schema registration is rejected if annotations require engines that aren't avail
 
 In standalone mode, only `credential`, `index`, and unannotated fields are available. Other annotations require the corresponding engines (Cipher, Veil, Keep) to be configured.
 
-## User Lifecycle
+## Envelope Lifecycle
+
+Sigil is entity-agnostic. The `ENVELOPE` commands work with any entity type. The `USER` commands are sugar that infer the credential field from the schema.
 
 ### Create
 
 ```sh
+# Generic envelope
 curl -X POST http://localhost:6500/sigil/myapp/users \
   -H "Content-Type: application/json" \
-  -d '{"fields": {"user_id": "alice", "email": "alice@example.com", "password": "correct-horse", "org_id": "acme", "name": "Alice"}}'
+  -d '{"fields": {"entity_id": "alice", "email": "alice@example.com", "password": "correct-horse", "org_id": "acme", "name": "Alice"}}'
+
+# Wire protocol (generic)
+ENVELOPE CREATE myapp alice {"email":"alice@example.com","password":"correct-horse","org_id":"acme","name":"Alice"}
+
+# Wire protocol (user sugar — identical behavior)
+USER CREATE myapp alice {"email":"alice@example.com","password":"correct-horse","org_id":"acme","name":"Alice"}
 ```
 
-Each field is routed to the appropriate handler based on schema annotations. Credential fields (password) are hashed with Argon2id and stored separately from the user record. PII fields are encrypted via Cipher. The user record contains only non-sensitive field values.
+Each field is routed to the appropriate handler based on schema annotations. Credential fields are hashed with Argon2id and stored separately. PII fields are encrypted via Cipher. The envelope record contains only non-sensitive field values.
 
 All fields are written atomically. If any field fails (e.g., Cipher is unavailable for a PII field), the entire operation is rolled back.
 
 ### Import
 
-Import a user with pre-hashed credential fields. Non-credential fields are processed normally (PII encrypted, indexes created, etc.). The credential value is treated as a hash — validated and stored directly, not hashed again.
+Import an envelope with pre-hashed credential fields. Non-credential fields are processed normally (PII encrypted, indexes created, etc.). The credential value is treated as a hash — validated and stored directly, not hashed again.
 
 ```sh
 curl -X POST http://localhost:6500/sigil/myapp/users/import \
   -H "Content-Type: application/json" \
-  -d '{"fields": {"user_id": "alice", "password": "$2b$12$saltsalt...", "org_id": "acme"}}'
+  -d '{"fields": {"entity_id": "alice", "password": "$2b$12$saltsalt...", "org_id": "acme"}}'
 ```
 
 Supported hash formats: Argon2id, Argon2i, Argon2d, bcrypt (`$2b$`/`$2a$`/`$2y$`), scrypt. On the next successful verify, non-Argon2id hashes are transparently rehashed.
 
-Wire protocol: `USER IMPORT <schema> <id> <json>`
+Wire protocol: `ENVELOPE IMPORT <schema> <id> <json>` or `USER IMPORT <schema> <id> <json>`
 
 ### Get
 
@@ -112,7 +121,7 @@ Wire protocol: `USER IMPORT <schema> <id> <json>`
 curl http://localhost:6500/sigil/myapp/users/alice
 ```
 
-Returns the user record with non-sensitive fields. Credential fields are never returned.
+Returns the envelope record with non-sensitive fields. Credential fields are never returned.
 
 ### Update
 
@@ -122,7 +131,7 @@ curl -X PATCH http://localhost:6500/sigil/myapp/users/alice \
   -d '{"fields": {"name": "Alice Smith", "org_id": "newcorp"}}'
 ```
 
-Updates non-credential fields. Credential fields cannot be updated through this endpoint — use password change/reset instead.
+Updates non-credential fields. Credential fields cannot be updated through this endpoint — use credential change/reset instead.
 
 ### Delete
 
@@ -130,7 +139,16 @@ Updates non-credential fields. Credential fields cannot be updated through this 
 curl -X DELETE http://localhost:6500/sigil/myapp/users/alice
 ```
 
-Deletes the user and all associated data (credentials, sessions).
+Deletes the envelope and all associated data (credentials, sessions).
+
+### Verify (generic — explicit field)
+
+```sh
+# Wire protocol: explicit credential field
+ENVELOPE VERIFY myapp svc1 api_key supersecretkey1
+```
+
+For multi-credential schemas or non-user entities, `ENVELOPE VERIFY` takes the credential field name explicitly. `USER VERIFY` infers it from the schema.
 
 ## Authentication
 
@@ -139,7 +157,7 @@ Deletes the user and all associated data (credentials, sessions).
 ```sh
 curl -X POST http://localhost:6500/sigil/myapp/sessions \
   -H "Content-Type: application/json" \
-  -d '{"user_id": "alice", "password": "correct-horse"}'
+  -d '{"entity_id": "alice", "password": "correct-horse"}'
 ```
 
 Returns:
@@ -172,7 +190,7 @@ curl -X DELETE http://localhost:6500/sigil/myapp/sessions \
 # All sessions
 curl -X DELETE http://localhost:6500/sigil/myapp/sessions \
   -H "Content-Type: application/json" \
-  -d '{"user_id": "alice"}'
+  -d '{"entity_id": "alice"}'
 ```
 
 ### JWKS
@@ -183,39 +201,43 @@ curl http://localhost:6500/sigil/myapp/.well-known/jwks.json
 
 Returns the JSON Web Key Set for external token verification.
 
-## Password Management
+## Credential Management
 
-### Change (requires old password)
+### Password commands (sugar — infers credential field)
 
 ```sh
+# Change (requires old password)
 curl -X POST http://localhost:6500/sigil/myapp/password/change \
   -H "Content-Type: application/json" \
-  -d '{"user_id": "alice", "old_password": "old-pw", "new_password": "new-pw"}'
-```
+  -d '{"entity_id": "alice", "old_password": "old-pw", "new_password": "new-pw"}'
 
-### Reset (admin / reset token)
-
-```sh
+# Reset (admin / reset token) — clears lockout
 curl -X POST http://localhost:6500/sigil/myapp/password/reset \
   -H "Content-Type: application/json" \
-  -d '{"user_id": "alice", "new_password": "new-pw"}'
-```
+  -d '{"entity_id": "alice", "new_password": "new-pw"}'
 
-Clears any account lockout.
-
-### Import (migration)
-
-```sh
+# Import pre-hashed password
 curl -X POST http://localhost:6500/sigil/myapp/password/import \
   -H "Content-Type: application/json" \
-  -d '{"user_id": "alice", "hash": "$2b$12$..."}'
+  -d '{"entity_id": "alice", "hash": "$2b$12$..."}'
 ```
 
-Accepts pre-hashed passwords in Argon2id, Argon2i, Argon2d, bcrypt, or scrypt format. On the next successful verify, non-Argon2id hashes are transparently rehashed.
+### Credential commands (generic — explicit field)
+
+For schemas with multiple credential fields, or for non-user entities:
+
+```sh
+# Wire protocol
+CREDENTIAL CHANGE myapp svc1 api_key old-key new-key
+CREDENTIAL RESET myapp svc1 recovery_key new-recovery-key
+CREDENTIAL IMPORT myapp svc1 api_key $argon2id$v=19$...
+```
+
+Accepts pre-hashed credentials in Argon2id, Argon2i, Argon2d, bcrypt, or scrypt format. On the next successful verify, non-Argon2id hashes are transparently rehashed.
 
 ## Account Lockout
 
-After a configurable number of failed password attempts (default: 5), the account is locked for a configurable duration (default: 15 minutes). Correct password during lockout still returns locked. Password reset clears lockout.
+After a configurable number of failed credential verification attempts (default: 5), the credential is locked for a configurable duration (default: 15 minutes). Correct credential during lockout still returns locked. Credential reset clears lockout. Lockout is per credential field — locking the `password` field doesn't affect the `recovery_key` field.
 
 ## Security
 

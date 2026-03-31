@@ -10,11 +10,11 @@ pub enum SigilError {
     #[error("schema already exists: {0}")]
     SchemaExists(String),
 
-    #[error("user not found")]
-    UserNotFound,
+    #[error("entity not found")]
+    EntityNotFound,
 
-    #[error("user already exists")]
-    UserExists,
+    #[error("entity already exists")]
+    EntityExists,
 
     #[error("missing required field: {0}")]
     MissingField(String),

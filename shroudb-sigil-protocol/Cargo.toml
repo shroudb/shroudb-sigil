@@ -20,6 +20,5 @@ tracing.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
-shroudb-storage.workspace = true
+shroudb-storage = { workspace = true, features = ["testing"] }
 shroudb-crypto.workspace = true
-tempfile = "3"

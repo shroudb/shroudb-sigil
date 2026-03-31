@@ -4,6 +4,7 @@ use shroudb_crypto::JwtAlgorithm;
 
 use shroudb_sigil_core::credential::PasswordPolicy;
 use shroudb_sigil_core::error::SigilError;
+use shroudb_sigil_core::record::EnvelopeRecord;
 use shroudb_sigil_core::schema::Schema;
 use shroudb_sigil_core::session::TokenPair;
 use shroudb_store::Store;
@@ -13,7 +14,7 @@ use crate::credential::CredentialManager;
 use crate::jwt::JwtManager;
 use crate::schema_registry::SchemaRegistry;
 use crate::session::SessionManager;
-use crate::write_coordinator::{UserRecord, WriteCoordinator};
+use crate::write_coordinator::WriteCoordinator;
 
 /// Configuration for the Sigil engine.
 pub struct SigilConfig {
@@ -100,67 +101,78 @@ impl<S: Store> SigilEngine<S> {
         self.schemas.list().await
     }
 
-    // ── User operations ─────────────────────────────────────────────
+    // ── Generic envelope operations ─────────────────────────────────
 
-    pub async fn user_create(
+    pub async fn envelope_create(
         &self,
         schema_name: &str,
-        user_id: &str,
+        entity_id: &str,
         fields: &std::collections::HashMap<String, serde_json::Value>,
-    ) -> Result<UserRecord, SigilError> {
+    ) -> Result<EnvelopeRecord, SigilError> {
         let schema = self.schemas.get(schema_name).await?;
-        self.coordinator.create_user(&schema, user_id, fields).await
-    }
-
-    pub async fn user_import(
-        &self,
-        schema_name: &str,
-        user_id: &str,
-        fields: &std::collections::HashMap<String, serde_json::Value>,
-    ) -> Result<UserRecord, SigilError> {
-        let schema = self.schemas.get(schema_name).await?;
-        self.coordinator.import_user(&schema, user_id, fields).await
-    }
-
-    pub async fn user_get(
-        &self,
-        schema_name: &str,
-        user_id: &str,
-    ) -> Result<UserRecord, SigilError> {
-        let schema = self.schemas.get(schema_name).await?;
-        self.coordinator.get_user(&schema, user_id).await
-    }
-
-    pub async fn user_update(
-        &self,
-        schema_name: &str,
-        user_id: &str,
-        fields: &std::collections::HashMap<String, serde_json::Value>,
-    ) -> Result<UserRecord, SigilError> {
-        let schema = self.schemas.get(schema_name).await?;
-        self.coordinator.update_user(&schema, user_id, fields).await
-    }
-
-    pub async fn user_delete(&self, schema_name: &str, user_id: &str) -> Result<(), SigilError> {
-        self.coordinator.delete_user(schema_name, user_id).await
-    }
-
-    pub async fn user_verify(
-        &self,
-        schema_name: &str,
-        user_id: &str,
-        password: &str,
-    ) -> Result<bool, SigilError> {
-        self.credentials
-            .verify(schema_name, user_id, password)
+        self.coordinator
+            .create_envelope(&schema, entity_id, fields)
             .await
     }
 
-    // ── Session operations ──────────────────────────────────────────
+    pub async fn envelope_import(
+        &self,
+        schema_name: &str,
+        entity_id: &str,
+        fields: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<EnvelopeRecord, SigilError> {
+        let schema = self.schemas.get(schema_name).await?;
+        self.coordinator
+            .import_envelope(&schema, entity_id, fields)
+            .await
+    }
 
-    /// Look up a user by a searchable field value via Veil.
-    /// Returns the user_id if found.
-    pub async fn user_lookup(
+    pub async fn envelope_get(
+        &self,
+        schema_name: &str,
+        entity_id: &str,
+    ) -> Result<EnvelopeRecord, SigilError> {
+        let schema = self.schemas.get(schema_name).await?;
+        self.coordinator.get_envelope(&schema, entity_id).await
+    }
+
+    pub async fn envelope_update(
+        &self,
+        schema_name: &str,
+        entity_id: &str,
+        fields: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<EnvelopeRecord, SigilError> {
+        let schema = self.schemas.get(schema_name).await?;
+        self.coordinator
+            .update_envelope(&schema, entity_id, fields)
+            .await
+    }
+
+    pub async fn envelope_delete(
+        &self,
+        schema_name: &str,
+        entity_id: &str,
+    ) -> Result<(), SigilError> {
+        let schema = self.schemas.get(schema_name).await?;
+        self.coordinator.delete_envelope(&schema, entity_id).await
+    }
+
+    /// Verify a specific credential field on an envelope.
+    pub async fn envelope_verify(
+        &self,
+        schema_name: &str,
+        entity_id: &str,
+        field_name: &str,
+        value: &str,
+    ) -> Result<bool, SigilError> {
+        self.credentials
+            .verify(schema_name, entity_id, field_name, value)
+            .await
+    }
+
+    /// Look up an entity by a searchable field value via Veil.
+    /// Returns the entity_id if found.
+    pub async fn envelope_lookup(
         &self,
         _schema_name: &str,
         field_name: &str,
@@ -171,8 +183,75 @@ impl<S: Store> SigilEngine<S> {
             .await
     }
 
-    /// Login by searchable field (e.g., email) instead of user_id.
-    /// Resolves the user via Veil blind search, then verifies credentials.
+    // ── User sugar (delegates to envelope_*) ────────────────────────
+    // These infer the credential field from the schema.
+
+    pub async fn user_create(
+        &self,
+        schema_name: &str,
+        user_id: &str,
+        fields: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<EnvelopeRecord, SigilError> {
+        self.envelope_create(schema_name, user_id, fields).await
+    }
+
+    pub async fn user_import(
+        &self,
+        schema_name: &str,
+        user_id: &str,
+        fields: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<EnvelopeRecord, SigilError> {
+        self.envelope_import(schema_name, user_id, fields).await
+    }
+
+    pub async fn user_get(
+        &self,
+        schema_name: &str,
+        user_id: &str,
+    ) -> Result<EnvelopeRecord, SigilError> {
+        self.envelope_get(schema_name, user_id).await
+    }
+
+    pub async fn user_update(
+        &self,
+        schema_name: &str,
+        user_id: &str,
+        fields: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<EnvelopeRecord, SigilError> {
+        self.envelope_update(schema_name, user_id, fields).await
+    }
+
+    pub async fn user_delete(&self, schema_name: &str, user_id: &str) -> Result<(), SigilError> {
+        self.envelope_delete(schema_name, user_id).await
+    }
+
+    /// Verify user credentials. Infers the credential field from the schema.
+    pub async fn user_verify(
+        &self,
+        schema_name: &str,
+        user_id: &str,
+        password: &str,
+    ) -> Result<bool, SigilError> {
+        let schema = self.schemas.get(schema_name).await?;
+        let cred_field = schema.credential_field_name()?;
+        self.envelope_verify(schema_name, user_id, cred_field, password)
+            .await
+    }
+
+    pub async fn user_lookup(
+        &self,
+        schema_name: &str,
+        field_name: &str,
+        field_value: &str,
+    ) -> Result<String, SigilError> {
+        self.envelope_lookup(schema_name, field_name, field_value)
+            .await
+    }
+
+    // ── Session operations ──────────────────────────────────────────
+
+    /// Login by searchable field (e.g., email) instead of entity_id.
+    /// Resolves the entity via Veil blind search, then verifies credentials.
     pub async fn session_create_by_field(
         &self,
         schema_name: &str,
@@ -181,28 +260,30 @@ impl<S: Store> SigilEngine<S> {
         password: &str,
         extra_claims: Option<&serde_json::Value>,
     ) -> Result<TokenPair, SigilError> {
-        let user_id = self
-            .user_lookup(schema_name, field_name, field_value)
+        let entity_id = self
+            .envelope_lookup(schema_name, field_name, field_value)
             .await?;
 
-        self.session_create(schema_name, &user_id, password, extra_claims)
+        self.session_create(schema_name, &entity_id, password, extra_claims)
             .await
     }
 
     pub async fn session_create(
         &self,
         schema_name: &str,
-        user_id: &str,
+        entity_id: &str,
         password: &str,
         extra_claims: Option<&serde_json::Value>,
     ) -> Result<TokenPair, SigilError> {
-        // Verify credentials first
+        // Verify credentials first (infers credential field from schema)
+        let schema = self.schemas.get(schema_name).await?;
+        let cred_field = schema.credential_field_name()?;
         self.credentials
-            .verify(schema_name, user_id, password)
+            .verify(schema_name, entity_id, cred_field, password)
             .await?;
 
         self.sessions
-            .create_session(schema_name, user_id, extra_claims)
+            .create_session(schema_name, entity_id, extra_claims)
             .await
     }
 
@@ -221,20 +302,60 @@ impl<S: Store> SigilEngine<S> {
     pub async fn session_revoke_all(
         &self,
         schema_name: &str,
-        user_id: &str,
+        entity_id: &str,
     ) -> Result<u64, SigilError> {
-        self.sessions.revoke_all(schema_name, user_id).await
+        self.sessions.revoke_all(schema_name, entity_id).await
     }
 
     pub async fn session_list(
         &self,
         schema_name: &str,
-        user_id: &str,
+        entity_id: &str,
     ) -> Result<Vec<shroudb_sigil_core::session::RefreshTokenRecord>, SigilError> {
-        self.sessions.list_sessions(schema_name, user_id).await
+        self.sessions.list_sessions(schema_name, entity_id).await
     }
 
-    // ── Password operations ─────────────────────────────────────────
+    // ── Credential operations ───────────────────────────────────────
+    // Generic credential operations with explicit field name.
+
+    pub async fn credential_change(
+        &self,
+        schema_name: &str,
+        entity_id: &str,
+        field_name: &str,
+        old_value: &str,
+        new_value: &str,
+    ) -> Result<(), SigilError> {
+        self.credentials
+            .change_credential(schema_name, entity_id, field_name, old_value, new_value)
+            .await
+    }
+
+    pub async fn credential_reset(
+        &self,
+        schema_name: &str,
+        entity_id: &str,
+        field_name: &str,
+        new_value: &str,
+    ) -> Result<(), SigilError> {
+        self.credentials
+            .reset_credential(schema_name, entity_id, field_name, new_value)
+            .await
+    }
+
+    pub async fn credential_import(
+        &self,
+        schema_name: &str,
+        entity_id: &str,
+        field_name: &str,
+        hash: &str,
+    ) -> Result<shroudb_sigil_core::credential::PasswordAlgorithm, SigilError> {
+        self.credentials
+            .import_credential(schema_name, entity_id, field_name, hash)
+            .await
+    }
+
+    // ── Password sugar (infers credential field from schema) ────────
 
     pub async fn password_change(
         &self,
@@ -243,8 +364,9 @@ impl<S: Store> SigilEngine<S> {
         old_password: &str,
         new_password: &str,
     ) -> Result<(), SigilError> {
-        self.credentials
-            .change_password(schema_name, user_id, old_password, new_password)
+        let schema = self.schemas.get(schema_name).await?;
+        let cred_field = schema.credential_field_name()?;
+        self.credential_change(schema_name, user_id, cred_field, old_password, new_password)
             .await
     }
 
@@ -254,8 +376,9 @@ impl<S: Store> SigilEngine<S> {
         user_id: &str,
         new_password: &str,
     ) -> Result<(), SigilError> {
-        self.credentials
-            .reset_password(schema_name, user_id, new_password)
+        let schema = self.schemas.get(schema_name).await?;
+        let cred_field = schema.credential_field_name()?;
+        self.credential_reset(schema_name, user_id, cred_field, new_password)
             .await
     }
 
@@ -265,8 +388,9 @@ impl<S: Store> SigilEngine<S> {
         user_id: &str,
         hash: &str,
     ) -> Result<shroudb_sigil_core::credential::PasswordAlgorithm, SigilError> {
-        self.credentials
-            .import_password(schema_name, user_id, hash)
+        let schema = self.schemas.get(schema_name).await?;
+        let cred_field = schema.credential_field_name()?;
+        self.credential_import(schema_name, user_id, cred_field, hash)
             .await
     }
 

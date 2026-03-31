@@ -93,7 +93,7 @@ impl<S: Store> SchemaRegistry<S> {
     /// Create the required namespaces for a schema.
     async fn create_schema_namespaces(&self, schema_name: &str) -> Result<(), SigilError> {
         let namespaces = [
-            format!("sigil.{schema_name}.users"),
+            format!("sigil.{schema_name}.envelopes"),
             format!("sigil.{schema_name}.credentials"),
             format!("sigil.{schema_name}.keys"),
             format!("sigil.{schema_name}.sessions"),
@@ -118,6 +118,10 @@ impl<S: Store> SchemaRegistry<S> {
 pub(crate) mod tests {
     use super::*;
     use shroudb_sigil_core::schema::{FieldAnnotations, FieldDef, FieldType};
+
+    pub(crate) async fn create_test_store() -> Arc<shroudb_storage::EmbeddedStore> {
+        shroudb_storage::test_util::create_test_store("sigil-test").await
+    }
 
     fn test_schema(name: &str) -> Schema {
         Schema {
@@ -213,8 +217,8 @@ pub(crate) mod tests {
         registry.register(test_schema("myapp")).await.unwrap();
 
         // Verify namespaces were created
-        let info = store.namespace_info("sigil.myapp.users").await;
-        assert!(info.is_ok(), "sigil.myapp.users namespace should exist");
+        let info = store.namespace_info("sigil.myapp.envelopes").await;
+        assert!(info.is_ok(), "sigil.myapp.envelopes namespace should exist");
 
         let info = store.namespace_info("sigil.myapp.credentials").await;
         assert!(
@@ -240,49 +244,5 @@ pub(crate) mod tests {
             fields: vec![],
         };
         assert!(registry.register(invalid).await.is_err());
-    }
-
-    /// Create a test Store backed by a real embedded StorageEngine.
-    pub(crate) async fn create_test_store() -> Arc<shroudb_storage::EmbeddedStore> {
-        let dir = tempfile::tempdir().unwrap();
-        let dir_path = dir.keep();
-
-        let config = shroudb_storage::StorageEngineConfig {
-            data_dir: dir_path,
-            ..Default::default()
-        };
-
-        let engine = shroudb_storage::StorageEngine::open(config, &EphemeralKey)
-            .await
-            .unwrap();
-        Arc::new(shroudb_storage::EmbeddedStore::new(
-            Arc::new(engine),
-            "sigil-test",
-        ))
-    }
-
-    /// Ephemeral master key for tests.
-    pub(crate) struct EphemeralKey;
-
-    impl shroudb_storage::MasterKeySource for EphemeralKey {
-        fn source_name(&self) -> &str {
-            "ephemeral-test"
-        }
-
-        fn load<'a>(
-            &'a self,
-        ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<
-                        Output = Result<shroudb_crypto::SecretBytes, shroudb_storage::StorageError>,
-                    > + Send
-                    + 'a,
-            >,
-        > {
-            Box::pin(async {
-                let key = vec![0x42u8; 32];
-                Ok(shroudb_crypto::SecretBytes::new(key))
-            })
-        }
     }
 }

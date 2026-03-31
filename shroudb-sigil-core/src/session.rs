@@ -22,7 +22,7 @@ pub enum TokenState {
 pub struct RefreshTokenRecord {
     pub token_id: String,
     pub family_id: String,
-    pub user_id: String,
+    pub entity_id: String,
     pub generation: u32,
     pub state: TokenState,
     pub created_at: u64,

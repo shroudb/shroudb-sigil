@@ -36,12 +36,12 @@ http_equiv = 409
 description = "Schema definition is invalid"
 http_equiv = 400
 
-[error_codes.USER_NOT_FOUND]
-description = "User does not exist"
+[error_codes.ENTITY_NOT_FOUND]
+description = "Entity does not exist"
 http_equiv = 404
 
-[error_codes.USER_EXISTS]
-description = "User already exists"
+[error_codes.ENTITY_EXISTS]
+description = "Entity already exists"
 http_equiv = 409
 
 [error_codes.MISSING_FIELD]
@@ -105,11 +105,129 @@ description = "List all registered schema names"
 parameters = []
 response = { names = "array<string>" }
 
-# ── User ──────────────────────────────────────────────────────────────────────
+# ── Envelope (generic) ───────────────────────────────────────────────────────
+
+[commands.ENVELOPE_CREATE]
+syntax = "ENVELOPE CREATE <schema> <id> <json>"
+description = "Create an envelope with field routing per schema annotations"
+parameters = [
+    { name = "schema", type = "string", required = true },
+    { name = "id", type = "string", required = true, description = "Entity ID" },
+    { name = "json", type = "json", required = true, description = "Field name-value pairs" },
+]
+response = { id = "string", fields = "map", created_at = "integer" }
+http = { method = "POST", path = "/sigil/{schema}/envelopes", request_body = "CreateEnvelopeBody" }
+
+[commands.ENVELOPE_GET]
+syntax = "ENVELOPE GET <schema> <id>"
+description = "Get an envelope record"
+parameters = [
+    { name = "schema", type = "string", required = true },
+    { name = "id", type = "string", required = true },
+]
+response = { id = "string", fields = "map", created_at = "integer", updated_at = "integer" }
+http = { method = "GET", path = "/sigil/{schema}/envelopes/{id}" }
+
+[commands.ENVELOPE_IMPORT]
+syntax = "ENVELOPE IMPORT <schema> <id> <json>"
+description = "Import an envelope with pre-hashed credential fields. Non-credential fields processed normally."
+parameters = [
+    { name = "schema", type = "string", required = true },
+    { name = "id", type = "string", required = true, description = "Entity ID" },
+    { name = "json", type = "json", required = true, description = "Field name-value pairs (credential values are hashes, not plaintext)" },
+]
+response = { id = "string", fields = "map", created_at = "integer" }
+http = { method = "POST", path = "/sigil/{schema}/envelopes/import", request_body = "CreateEnvelopeBody" }
+
+[commands.ENVELOPE_UPDATE]
+syntax = "ENVELOPE UPDATE <schema> <id> <json>"
+description = "Update non-credential fields on an existing envelope"
+parameters = [
+    { name = "schema", type = "string", required = true },
+    { name = "id", type = "string", required = true },
+    { name = "json", type = "json", required = true, description = "Field name-value pairs to update" },
+]
+response = { id = "string", fields = "map", updated_at = "integer" }
+http = { method = "PATCH", path = "/sigil/{schema}/envelopes/{id}", request_body = "UpdateEnvelopeBody" }
+
+[commands.ENVELOPE_DELETE]
+syntax = "ENVELOPE DELETE <schema> <id>"
+description = "Delete an envelope and all associated data"
+parameters = [
+    { name = "schema", type = "string", required = true },
+    { name = "id", type = "string", required = true },
+]
+response = { status = "string" }
+http = { method = "DELETE", path = "/sigil/{schema}/envelopes/{id}" }
+
+[commands.ENVELOPE_VERIFY]
+syntax = "ENVELOPE VERIFY <schema> <id> <field> <value>"
+description = "Verify a credential field on an envelope by explicit field name"
+parameters = [
+    { name = "schema", type = "string", required = true },
+    { name = "id", type = "string", required = true },
+    { name = "field", type = "string", required = true, description = "Name of the credential field to verify" },
+    { name = "value", type = "string", required = true, description = "Plaintext value to verify against" },
+]
+response = { valid = "boolean" }
+http = { method = "POST", path = "/sigil/{schema}/envelopes/verify", request_body = "EnvelopeVerifyBody" }
+
+[commands.ENVELOPE_LOOKUP]
+syntax = "ENVELOPE LOOKUP <schema> <field> <value>"
+description = "Look up an envelope by indexed or searchable field value"
+parameters = [
+    { name = "schema", type = "string", required = true },
+    { name = "field", type = "string", required = true, description = "Name of the indexed/searchable field" },
+    { name = "value", type = "string", required = true, description = "Value to search for" },
+]
+response = { id = "string", fields = "map", created_at = "integer", updated_at = "integer" }
+http = { method = "POST", path = "/sigil/{schema}/envelopes/lookup", request_body = "EnvelopeLookupBody" }
+
+# ── Credential (generic) ─────────────────────────────────────────────────────
+
+[commands.CREDENTIAL_CHANGE]
+syntax = "CREDENTIAL CHANGE <schema> <id> <field> <old> <new>"
+description = "Change a credential field (requires old value for verification)"
+parameters = [
+    { name = "schema", type = "string", required = true },
+    { name = "id", type = "string", required = true },
+    { name = "field", type = "string", required = true, description = "Name of the credential field" },
+    { name = "old", type = "string", required = true },
+    { name = "new", type = "string", required = true },
+]
+response = { status = "string" }
+http = { method = "POST", path = "/sigil/{schema}/credentials/change", request_body = "CredentialChangeBody" }
+
+[commands.CREDENTIAL_RESET]
+syntax = "CREDENTIAL RESET <schema> <id> <field> <new>"
+description = "Force-reset a credential field without requiring old value (admin/reset token)"
+parameters = [
+    { name = "schema", type = "string", required = true },
+    { name = "id", type = "string", required = true },
+    { name = "field", type = "string", required = true, description = "Name of the credential field" },
+    { name = "new", type = "string", required = true },
+]
+response = { status = "string" }
+http = { method = "POST", path = "/sigil/{schema}/credentials/reset", request_body = "CredentialResetBody" }
+
+[commands.CREDENTIAL_IMPORT]
+syntax = "CREDENTIAL IMPORT <schema> <id> <field> <hash> [META <json>]"
+description = "Import a pre-hashed credential (bcrypt, scrypt, argon2). Transparently rehashed to Argon2id on next verify."
+parameters = [
+    { name = "schema", type = "string", required = true },
+    { name = "id", type = "string", required = true },
+    { name = "field", type = "string", required = true, description = "Name of the credential field" },
+    { name = "hash", type = "string", required = true, description = "PHC string or bcrypt format" },
+    { name = "metadata", type = "json", required = false },
+]
+response = { algorithm = "string" }
+http = { method = "POST", path = "/sigil/{schema}/credentials/import", request_body = "CredentialImportBody" }
+
+# ── User (sugar — infers credential field from schema) ───────────────────────
 
 [commands.USER_CREATE]
 syntax = "USER CREATE <schema> <id> <json>"
-description = "Create a user with field routing per schema annotations"
+description = "Sugar: create an envelope. Equivalent to ENVELOPE CREATE."
 parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true, description = "User ID" },
@@ -120,7 +238,7 @@ http = { method = "POST", path = "/sigil/{schema}/users", request_body = "Create
 
 [commands.USER_GET]
 syntax = "USER GET <schema> <id>"
-description = "Get a user record"
+description = "Sugar: get an envelope. Equivalent to ENVELOPE GET."
 parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true },
@@ -130,7 +248,7 @@ http = { method = "GET", path = "/sigil/{schema}/users/{id}" }
 
 [commands.USER_IMPORT]
 syntax = "USER IMPORT <schema> <id> <json>"
-description = "Import a user with pre-hashed credential fields. Non-credential fields processed normally."
+description = "Sugar: import an envelope with pre-hashed credentials. Equivalent to ENVELOPE IMPORT."
 parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true, description = "User ID" },
@@ -141,7 +259,7 @@ http = { method = "POST", path = "/sigil/{schema}/users/import", request_body = 
 
 [commands.USER_UPDATE]
 syntax = "USER UPDATE <schema> <id> <json>"
-description = "Update non-credential fields on an existing user"
+description = "Sugar: update non-credential fields. Equivalent to ENVELOPE UPDATE."
 parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true },
@@ -152,7 +270,7 @@ http = { method = "PATCH", path = "/sigil/{schema}/users/{id}", request_body = "
 
 [commands.USER_DELETE]
 syntax = "USER DELETE <schema> <id>"
-description = "Delete a user and all associated data"
+description = "Sugar: delete an envelope. Equivalent to ENVELOPE DELETE."
 parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true },
@@ -162,7 +280,7 @@ http = { method = "DELETE", path = "/sigil/{schema}/users/{id}" }
 
 [commands.USER_VERIFY]
 syntax = "USER VERIFY <schema> <id> <password>"
-description = "Verify a user's credential (password)"
+description = "Sugar: verify credential. Infers the credential field from schema. Equivalent to ENVELOPE VERIFY with implicit field."
 parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true },
@@ -178,7 +296,7 @@ syntax = "SESSION CREATE <schema> <id> <password> [META <json>]"
 description = "Verify credentials and issue access + refresh tokens"
 parameters = [
     { name = "schema", type = "string", required = true },
-    { name = "id", type = "string", required = true },
+    { name = "id", type = "string", required = true, description = "Entity ID" },
     { name = "password", type = "string", required = true },
     { name = "metadata", type = "json", required = false, description = "Extra claims to merge into access token" },
 ]
@@ -207,29 +325,29 @@ http = { method = "DELETE", path = "/sigil/{schema}/sessions", request_body = "R
 
 [commands.SESSION_REVOKE_ALL]
 syntax = "SESSION REVOKE ALL <schema> <id>"
-description = "Revoke all sessions for a user (logout everywhere)"
+description = "Revoke all sessions for an entity (logout everywhere)"
 parameters = [
     { name = "schema", type = "string", required = true },
-    { name = "id", type = "string", required = true },
+    { name = "id", type = "string", required = true, description = "Entity ID" },
 ]
 response = { revoked = "integer" }
-http = { method = "DELETE", path = "/sigil/{schema}/sessions", request_body = "RevokeBody (user_id)" }
+http = { method = "DELETE", path = "/sigil/{schema}/sessions", request_body = "RevokeBody (entity_id)" }
 
 [commands.SESSION_LIST]
 syntax = "SESSION LIST <schema> <id>"
-description = "List active sessions for a user"
+description = "List active sessions for an entity"
 parameters = [
     { name = "schema", type = "string", required = true },
-    { name = "id", type = "string", required = true },
+    { name = "id", type = "string", required = true, description = "Entity ID" },
 ]
 response = { sessions = "array<SessionRecord>" }
 http = { method = "GET", path = "/sigil/{schema}/sessions/{id}" }
 
-# ── Password ──────────────────────────────────────────────────────────────────
+# ── Password (sugar — infers credential field from schema) ───────────────────
 
 [commands.PASSWORD_CHANGE]
 syntax = "PASSWORD CHANGE <schema> <id> <old> <new>"
-description = "Change password (requires old password)"
+description = "Sugar: change password. Infers credential field from schema. Equivalent to CREDENTIAL CHANGE with implicit field."
 parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true },
@@ -241,7 +359,7 @@ http = { method = "POST", path = "/sigil/{schema}/password/change", request_body
 
 [commands.PASSWORD_RESET]
 syntax = "PASSWORD RESET <schema> <id> <new>"
-description = "Force-reset password without requiring old (admin/reset token)"
+description = "Sugar: force-reset password. Infers credential field from schema. Equivalent to CREDENTIAL RESET with implicit field."
 parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true },
@@ -252,7 +370,7 @@ http = { method = "POST", path = "/sigil/{schema}/password/reset", request_body 
 
 [commands.PASSWORD_IMPORT]
 syntax = "PASSWORD IMPORT <schema> <id> <hash> [META <json>]"
-description = "Import a pre-hashed password (bcrypt, scrypt, argon2). Transparently rehashed to Argon2id on next verify."
+description = "Sugar: import pre-hashed password. Infers credential field from schema. Equivalent to CREDENTIAL IMPORT with implicit field."
 parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true },

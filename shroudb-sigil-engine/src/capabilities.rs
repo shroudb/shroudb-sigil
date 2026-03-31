@@ -33,8 +33,11 @@ pub trait KeepOps: Send + Sync {
 
 /// Trait for Sentry operations (post-verify authorization enrichment).
 pub trait SentryOps: Send + Sync {
-    fn evaluate(&self, user_id: &str, context: &serde_json::Value)
-    -> BoxFut<'_, serde_json::Value>;
+    fn evaluate(
+        &self,
+        entity_id: &str,
+        context: &serde_json::Value,
+    ) -> BoxFut<'_, serde_json::Value>;
 }
 
 /// Engine capabilities provided at construction time.
@@ -47,22 +50,4 @@ pub struct Capabilities {
     pub veil: Option<Box<dyn VeilOps>>,
     pub keep: Option<Box<dyn KeepOps>>,
     pub sentry: Option<Box<dyn SentryOps>>,
-}
-
-impl Capabilities {
-    pub fn has_cipher(&self) -> bool {
-        self.cipher.is_some()
-    }
-
-    pub fn has_veil(&self) -> bool {
-        self.veil.is_some()
-    }
-
-    pub fn has_keep(&self) -> bool {
-        self.keep.is_some()
-    }
-
-    pub fn has_sentry(&self) -> bool {
-        self.sentry.is_some()
-    }
 }

@@ -33,7 +33,7 @@ async fn http_full_auth_lifecycle() {
         .post(server.http_url("/sigil/myapp/users"))
         .json(&serde_json::json!({
             "fields": {
-                "user_id": "alice",
+                "entity_id": "alice",
                 "password": "correcthorse",
                 "org": "acme",
                 "display_name": "Alice"
@@ -44,7 +44,7 @@ async fn http_full_auth_lifecycle() {
         .unwrap();
     assert_eq!(resp.status(), 201, "user create failed");
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["user_id"], "alice");
+    assert_eq!(body["entity_id"], "alice");
     assert_eq!(body["fields"]["org"], "acme");
     assert_eq!(body["fields"]["display_name"], "Alice");
     assert!(
@@ -55,7 +55,7 @@ async fn http_full_auth_lifecycle() {
     // Verify password
     let resp = client
         .post(server.http_url("/sigil/myapp/verify"))
-        .json(&serde_json::json!({"user_id": "alice", "password": "correcthorse"}))
+        .json(&serde_json::json!({"entity_id": "alice", "password": "correcthorse"}))
         .send()
         .await
         .unwrap();
@@ -66,7 +66,7 @@ async fn http_full_auth_lifecycle() {
     // Wrong password
     let resp = client
         .post(server.http_url("/sigil/myapp/verify"))
-        .json(&serde_json::json!({"user_id": "alice", "password": "wrong"}))
+        .json(&serde_json::json!({"entity_id": "alice", "password": "wrong"}))
         .send()
         .await
         .unwrap();
@@ -75,7 +75,7 @@ async fn http_full_auth_lifecycle() {
     // Login (create session)
     let resp = client
         .post(server.http_url("/sigil/myapp/sessions"))
-        .json(&serde_json::json!({"user_id": "alice", "password": "correcthorse"}))
+        .json(&serde_json::json!({"entity_id": "alice", "password": "correcthorse"}))
         .send()
         .await
         .unwrap();
@@ -142,7 +142,7 @@ async fn http_full_auth_lifecycle() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let user: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(user["user_id"], "alice");
+    assert_eq!(user["entity_id"], "alice");
     assert_eq!(user["fields"]["org"], "acme");
 
     // Update user (non-credential fields)
@@ -223,7 +223,7 @@ async fn http_user_import_with_prehashed_password() {
     client
         .post(server.http_url("/sigil/import-test/users"))
         .json(&serde_json::json!({
-            "fields": {"user_id": "source", "password": "original123", "org": "acme"}
+            "fields": {"entity_id": "source", "password": "original123", "org": "acme"}
         }))
         .send()
         .await
@@ -232,7 +232,7 @@ async fn http_user_import_with_prehashed_password() {
     // Verify the source user to generate a known-good hash via the verify endpoint
     let resp = client
         .post(server.http_url("/sigil/import-test/verify"))
-        .json(&serde_json::json!({"user_id": "source", "password": "original123"}))
+        .json(&serde_json::json!({"entity_id": "source", "password": "original123"}))
         .send()
         .await
         .unwrap();
@@ -246,7 +246,7 @@ async fn http_user_import_with_prehashed_password() {
     let resp = client
         .post(server.http_url("/sigil/import-test/users/import"))
         .json(&serde_json::json!({
-            "fields": {"user_id": "imported", "password": hash, "org": "migrated"}
+            "fields": {"entity_id": "imported", "password": hash, "org": "migrated"}
         }))
         .send()
         .await
@@ -278,7 +278,7 @@ async fn http_user_import_with_prehashed_password() {
     // with a wrong password
     let resp = client
         .post(server.http_url("/sigil/import-test/verify"))
-        .json(&serde_json::json!({"user_id": "imported", "password": "definitely-wrong"}))
+        .json(&serde_json::json!({"entity_id": "imported", "password": "definitely-wrong"}))
         .send()
         .await
         .unwrap();
@@ -288,7 +288,7 @@ async fn http_user_import_with_prehashed_password() {
     let resp = client
         .post(server.http_url("/sigil/import-test/users/import"))
         .json(&serde_json::json!({
-            "fields": {"user_id": "imported", "password": hash, "org": "dup"}
+            "fields": {"entity_id": "imported", "password": hash, "org": "dup"}
         }))
         .send()
         .await
@@ -299,7 +299,7 @@ async fn http_user_import_with_prehashed_password() {
     let resp = client
         .post(server.http_url("/sigil/import-test/users/import"))
         .json(&serde_json::json!({
-            "fields": {"user_id": "badhash", "password": "not-a-hash", "org": "bad"}
+            "fields": {"entity_id": "badhash", "password": "not-a-hash", "org": "bad"}
         }))
         .send()
         .await
@@ -329,7 +329,7 @@ async fn http_password_change_and_reset() {
 
     client
         .post(server.http_url("/sigil/pwtest/users"))
-        .json(&serde_json::json!({"fields": {"user_id": "bob", "password": "original123"}}))
+        .json(&serde_json::json!({"fields": {"entity_id": "bob", "password": "original123"}}))
         .send()
         .await
         .unwrap();
@@ -338,7 +338,7 @@ async fn http_password_change_and_reset() {
     let resp = client
         .post(server.http_url("/sigil/pwtest/password/change"))
         .json(&serde_json::json!({
-            "user_id": "bob",
+            "entity_id": "bob",
             "old_password": "original123",
             "new_password": "changed456"
         }))
@@ -350,7 +350,7 @@ async fn http_password_change_and_reset() {
     // Old password fails
     let resp = client
         .post(server.http_url("/sigil/pwtest/verify"))
-        .json(&serde_json::json!({"user_id": "bob", "password": "original123"}))
+        .json(&serde_json::json!({"entity_id": "bob", "password": "original123"}))
         .send()
         .await
         .unwrap();
@@ -359,7 +359,7 @@ async fn http_password_change_and_reset() {
     // New password works
     let resp = client
         .post(server.http_url("/sigil/pwtest/verify"))
-        .json(&serde_json::json!({"user_id": "bob", "password": "changed456"}))
+        .json(&serde_json::json!({"entity_id": "bob", "password": "changed456"}))
         .send()
         .await
         .unwrap();
@@ -368,7 +368,7 @@ async fn http_password_change_and_reset() {
     // Reset password (admin/forced reset)
     let resp = client
         .post(server.http_url("/sigil/pwtest/password/reset"))
-        .json(&serde_json::json!({"user_id": "bob", "new_password": "reset789!"}))
+        .json(&serde_json::json!({"entity_id": "bob", "new_password": "reset789!"}))
         .send()
         .await
         .unwrap();
@@ -377,7 +377,7 @@ async fn http_password_change_and_reset() {
     // Reset password works
     let resp = client
         .post(server.http_url("/sigil/pwtest/verify"))
-        .json(&serde_json::json!({"user_id": "bob", "password": "reset789!"}))
+        .json(&serde_json::json!({"entity_id": "bob", "password": "reset789!"}))
         .send()
         .await
         .unwrap();
@@ -456,7 +456,7 @@ async fn http_error_responses() {
 
     let resp = client
         .post(server.http_url("/sigil/pii-app/users"))
-        .json(&serde_json::json!({"fields": {"user_id": "u1", "email": "a@b.com"}}))
+        .json(&serde_json::json!({"fields": {"entity_id": "u1", "email": "a@b.com"}}))
         .send()
         .await
         .unwrap();
@@ -488,7 +488,7 @@ async fn http_account_lockout() {
 
     client
         .post(server.http_url("/sigil/lock/users"))
-        .json(&serde_json::json!({"fields": {"user_id": "lockme", "password": "correct123"}}))
+        .json(&serde_json::json!({"fields": {"entity_id": "lockme", "password": "correct123"}}))
         .send()
         .await
         .unwrap();
@@ -497,7 +497,7 @@ async fn http_account_lockout() {
     for _ in 0..5 {
         client
             .post(server.http_url("/sigil/lock/verify"))
-            .json(&serde_json::json!({"user_id": "lockme", "password": "wrong"}))
+            .json(&serde_json::json!({"entity_id": "lockme", "password": "wrong"}))
             .send()
             .await
             .unwrap();
@@ -506,7 +506,7 @@ async fn http_account_lockout() {
     // Next attempt should be locked (429)
     let resp = client
         .post(server.http_url("/sigil/lock/verify"))
-        .json(&serde_json::json!({"user_id": "lockme", "password": "correct123"}))
+        .json(&serde_json::json!({"entity_id": "lockme", "password": "correct123"}))
         .send()
         .await
         .unwrap();
@@ -711,7 +711,7 @@ async fn acl_unauthenticated_rejected_for_protected_routes() {
     // USER CREATE requires Write — should fail without auth
     let resp = client
         .post(server.http_url("/sigil/myapp/users"))
-        .json(&serde_json::json!({"fields": {"user_id": "x", "f": "v"}}))
+        .json(&serde_json::json!({"fields": {"entity_id": "x", "f": "v"}}))
         .send()
         .await
         .unwrap();
@@ -745,7 +745,7 @@ async fn acl_valid_admin_token_accepted() {
     let resp = client
         .post(server.http_url("/sigil/myapp/users"))
         .header("Authorization", "Bearer admin-token")
-        .json(&serde_json::json!({"fields": {"user_id": "alice", "password": "test12345678", "org": "acme"}}))
+        .json(&serde_json::json!({"fields": {"entity_id": "alice", "password": "test12345678", "org": "acme"}}))
         .send()
         .await
         .unwrap();
@@ -818,7 +818,7 @@ async fn acl_read_only_cannot_write() {
     client
         .post(server.http_url("/sigil/myapp/users"))
         .header("Authorization", "Bearer admin-token")
-        .json(&serde_json::json!({"fields": {"user_id": "bob", "password": "test12345678", "org": "acme"}}))
+        .json(&serde_json::json!({"fields": {"entity_id": "bob", "password": "test12345678", "org": "acme"}}))
         .send()
         .await
         .unwrap();
@@ -836,7 +836,7 @@ async fn acl_read_only_cannot_write() {
     let resp = client
         .post(server.http_url("/sigil/myapp/users"))
         .header("Authorization", "Bearer readonly-token")
-        .json(&serde_json::json!({"fields": {"user_id": "x", "password": "test12345678", "org": "x"}}))
+        .json(&serde_json::json!({"fields": {"entity_id": "x", "password": "test12345678", "org": "x"}}))
         .send()
         .await
         .unwrap();
@@ -850,7 +850,7 @@ async fn acl_read_only_cannot_write() {
     let resp = client
         .post(server.http_url("/sigil/myapp/verify"))
         .header("Authorization", "Bearer readonly-token")
-        .json(&serde_json::json!({"user_id": "bob", "password": "test12345678"}))
+        .json(&serde_json::json!({"entity_id": "bob", "password": "test12345678"}))
         .send()
         .await
         .unwrap();
@@ -945,7 +945,7 @@ async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
         .post(server.http_url("/sigil/pii-test/users"))
         .json(&serde_json::json!({
             "fields": {
-                "user_id": "alice",
+                "entity_id": "alice",
                 "email": "alice@example.com",
                 "password": "test12345678",
                 "org": "acme"
@@ -969,7 +969,7 @@ async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let user: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(user["user_id"], "alice");
+    assert_eq!(user["entity_id"], "alice");
     assert_eq!(user["fields"]["org"], "acme");
     assert_eq!(
         user["fields"]["email"], "[encrypted]",
@@ -1006,7 +1006,7 @@ async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
     // Verify credentials still work
     let resp = client
         .post(server.http_url("/sigil/pii-test/verify"))
-        .json(&serde_json::json!({"user_id": "alice", "password": "test12345678"}))
+        .json(&serde_json::json!({"entity_id": "alice", "password": "test12345678"}))
         .send()
         .await
         .unwrap();
@@ -1082,7 +1082,7 @@ async fn cipher_veil_searchable_pii_roundtrip() {
             .post(server.http_url("/sigil/search-test/users"))
             .json(&serde_json::json!({
                 "fields": {
-                    "user_id": id,
+                    "entity_id": id,
                     "email": email,
                     "password": "test12345678",
                     "name": name
@@ -1176,7 +1176,7 @@ async fn login_by_encrypted_email() {
         .post(server.http_url("/sigil/app/users"))
         .json(&serde_json::json!({
             "fields": {
-                "user_id": "u_abc123",
+                "entity_id": "u_abc123",
                 "email": "alice@example.com",
                 "password": "correct-horse-battery"
             }
@@ -1312,7 +1312,7 @@ async fn keep_secret_field_storage() {
         .post(server.http_url("/sigil/secrets/users"))
         .json(&serde_json::json!({
             "fields": {
-                "user_id": "alice",
+                "entity_id": "alice",
                 "password": "test12345678",
                 "api_key": "sk_live_abc123xyz",
                 "org": "acme"
@@ -1355,7 +1355,7 @@ async fn keep_secret_field_storage() {
     // Credentials still work
     let resp = client
         .post(server.http_url("/sigil/secrets/verify"))
-        .json(&serde_json::json!({"user_id": "alice", "password": "test12345678"}))
+        .json(&serde_json::json!({"entity_id": "alice", "password": "test12345678"}))
         .send()
         .await
         .unwrap();
@@ -1405,7 +1405,7 @@ index = true
     let resp = client
         .post(server.http_url("/sigil/myapp/users"))
         .json(&serde_json::json!({
-            "fields": {"user_id": "alice", "password": "correct-horse", "org": "acme"}
+            "fields": {"entity_id": "alice", "password": "correct-horse", "org": "acme"}
         }))
         .send()
         .await
@@ -1415,7 +1415,7 @@ index = true
     // Can immediately login
     let resp = client
         .post(server.http_url("/sigil/myapp/sessions"))
-        .json(&serde_json::json!({"user_id": "alice", "password": "correct-horse"}))
+        .json(&serde_json::json!({"entity_id": "alice", "password": "correct-horse"}))
         .send()
         .await
         .unwrap();

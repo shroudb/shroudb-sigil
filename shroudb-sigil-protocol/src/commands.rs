@@ -20,7 +20,43 @@ pub enum SigilCommand {
     },
     SchemaList,
 
-    // User
+    // ── Generic envelope commands ───────────────────────────────────
+    EnvelopeCreate {
+        schema: String,
+        entity_id: String,
+        fields: HashMap<String, serde_json::Value>,
+    },
+    EnvelopeGet {
+        schema: String,
+        entity_id: String,
+    },
+    EnvelopeDelete {
+        schema: String,
+        entity_id: String,
+    },
+    EnvelopeImport {
+        schema: String,
+        entity_id: String,
+        fields: HashMap<String, serde_json::Value>,
+    },
+    EnvelopeUpdate {
+        schema: String,
+        entity_id: String,
+        fields: HashMap<String, serde_json::Value>,
+    },
+    EnvelopeVerify {
+        schema: String,
+        entity_id: String,
+        field: String,
+        value: String,
+    },
+    EnvelopeLookup {
+        schema: String,
+        field_name: String,
+        field_value: String,
+    },
+
+    // ── User commands (sugar — same semantics, infers credential field) ──
     UserCreate {
         schema: String,
         user_id: String,
@@ -58,7 +94,7 @@ pub enum SigilCommand {
     // Session
     SessionCreate {
         schema: String,
-        user_id: String,
+        entity_id: String,
         password: String,
         metadata: Option<serde_json::Value>,
     },
@@ -79,14 +115,36 @@ pub enum SigilCommand {
     },
     SessionRevokeAll {
         schema: String,
-        user_id: String,
+        entity_id: String,
     },
     SessionList {
         schema: String,
-        user_id: String,
+        entity_id: String,
     },
 
-    // Password
+    // ── Credential commands (generic — explicit field) ──────────────
+    CredentialChange {
+        schema: String,
+        entity_id: String,
+        field: String,
+        old_value: String,
+        new_value: String,
+    },
+    CredentialReset {
+        schema: String,
+        entity_id: String,
+        field: String,
+        new_value: String,
+    },
+    CredentialImport {
+        schema: String,
+        entity_id: String,
+        field: String,
+        hash: String,
+        metadata: Option<serde_json::Value>,
+    },
+
+    // ── Password commands (sugar — infers credential field) ─────────
     PasswordChange {
         schema: String,
         user_id: String,
@@ -131,8 +189,10 @@ impl SigilCommand {
             // Schema mutation is a structural change → admin
             SigilCommand::SchemaRegister { .. } => AclRequirement::Admin,
 
-            // Read operations on user data
-            SigilCommand::UserGet { schema, .. }
+            // Read operations
+            SigilCommand::EnvelopeGet { schema, .. }
+            | SigilCommand::EnvelopeLookup { schema, .. }
+            | SigilCommand::UserGet { schema, .. }
             | SigilCommand::UserLookup { schema, .. }
             | SigilCommand::SessionList { schema, .. } => AclRequirement::Namespace {
                 ns: format!("sigil.{schema}.*"),
@@ -140,8 +200,13 @@ impl SigilCommand {
                 tenant_override: None,
             },
 
-            // Write operations on user data
-            SigilCommand::UserCreate { schema, .. }
+            // Write operations
+            SigilCommand::EnvelopeCreate { schema, .. }
+            | SigilCommand::EnvelopeImport { schema, .. }
+            | SigilCommand::EnvelopeUpdate { schema, .. }
+            | SigilCommand::EnvelopeDelete { schema, .. }
+            | SigilCommand::EnvelopeVerify { schema, .. }
+            | SigilCommand::UserCreate { schema, .. }
             | SigilCommand::UserImport { schema, .. }
             | SigilCommand::UserUpdate { schema, .. }
             | SigilCommand::UserDelete { schema, .. }
@@ -151,6 +216,9 @@ impl SigilCommand {
             | SigilCommand::SessionRefresh { schema, .. }
             | SigilCommand::SessionRevoke { schema, .. }
             | SigilCommand::SessionRevokeAll { schema, .. }
+            | SigilCommand::CredentialChange { schema, .. }
+            | SigilCommand::CredentialReset { schema, .. }
+            | SigilCommand::CredentialImport { schema, .. }
             | SigilCommand::PasswordChange { schema, .. }
             | SigilCommand::PasswordReset { schema, .. }
             | SigilCommand::PasswordImport { schema, .. } => AclRequirement::Namespace {
@@ -181,8 +249,10 @@ pub fn parse_command(args: &[&str]) -> Result<SigilCommand, String> {
             })
         }
         "SCHEMA" => parse_schema(args),
+        "ENVELOPE" => parse_envelope(args),
         "USER" => parse_user(args),
         "SESSION" => parse_session(args),
+        "CREDENTIAL" => parse_credential(args),
         "PASSWORD" => parse_password(args),
         "JWKS" => parse_jwks(args),
         "HEALTH" => Ok(SigilCommand::Health),
@@ -215,6 +285,90 @@ fn parse_schema(args: &[&str]) -> Result<SigilCommand, String> {
         }
         "LIST" => Ok(SigilCommand::SchemaList),
         sub => Err(format!("unknown SCHEMA subcommand: {sub}")),
+    }
+}
+
+fn parse_envelope(args: &[&str]) -> Result<SigilCommand, String> {
+    if args.len() < 2 {
+        return Err("ENVELOPE requires a subcommand".into());
+    }
+    match args[1].to_uppercase().as_str() {
+        "CREATE" => {
+            if args.len() < 5 {
+                return Err("ENVELOPE CREATE <schema> <id> <json>".into());
+            }
+            let fields: HashMap<String, serde_json::Value> =
+                serde_json::from_str(args[4]).map_err(|e| format!("invalid fields JSON: {e}"))?;
+            Ok(SigilCommand::EnvelopeCreate {
+                schema: args[2].to_string(),
+                entity_id: args[3].to_string(),
+                fields,
+            })
+        }
+        "GET" => {
+            if args.len() < 4 {
+                return Err("ENVELOPE GET <schema> <id>".into());
+            }
+            Ok(SigilCommand::EnvelopeGet {
+                schema: args[2].to_string(),
+                entity_id: args[3].to_string(),
+            })
+        }
+        "LOOKUP" => {
+            if args.len() < 5 {
+                return Err("ENVELOPE LOOKUP <schema> <field> <value>".into());
+            }
+            Ok(SigilCommand::EnvelopeLookup {
+                schema: args[2].to_string(),
+                field_name: args[3].to_string(),
+                field_value: args[4].to_string(),
+            })
+        }
+        "IMPORT" => {
+            if args.len() < 5 {
+                return Err("ENVELOPE IMPORT <schema> <id> <json>".into());
+            }
+            let fields: HashMap<String, serde_json::Value> =
+                serde_json::from_str(args[4]).map_err(|e| format!("invalid fields JSON: {e}"))?;
+            Ok(SigilCommand::EnvelopeImport {
+                schema: args[2].to_string(),
+                entity_id: args[3].to_string(),
+                fields,
+            })
+        }
+        "UPDATE" => {
+            if args.len() < 5 {
+                return Err("ENVELOPE UPDATE <schema> <id> <json>".into());
+            }
+            let fields: HashMap<String, serde_json::Value> =
+                serde_json::from_str(args[4]).map_err(|e| format!("invalid fields JSON: {e}"))?;
+            Ok(SigilCommand::EnvelopeUpdate {
+                schema: args[2].to_string(),
+                entity_id: args[3].to_string(),
+                fields,
+            })
+        }
+        "DELETE" => {
+            if args.len() < 4 {
+                return Err("ENVELOPE DELETE <schema> <id>".into());
+            }
+            Ok(SigilCommand::EnvelopeDelete {
+                schema: args[2].to_string(),
+                entity_id: args[3].to_string(),
+            })
+        }
+        "VERIFY" => {
+            if args.len() < 6 {
+                return Err("ENVELOPE VERIFY <schema> <id> <field> <value>".into());
+            }
+            Ok(SigilCommand::EnvelopeVerify {
+                schema: args[2].to_string(),
+                entity_id: args[3].to_string(),
+                field: args[4].to_string(),
+                value: args[5].to_string(),
+            })
+        }
+        sub => Err(format!("unknown ENVELOPE subcommand: {sub}")),
     }
 }
 
@@ -316,7 +470,7 @@ fn parse_session(args: &[&str]) -> Result<SigilCommand, String> {
                 .map_err(|e| format!("invalid META JSON: {e}"))?;
             Ok(SigilCommand::SessionCreate {
                 schema: args[2].to_string(),
-                user_id: args[3].to_string(),
+                entity_id: args[3].to_string(),
                 password: args[4].to_string(),
                 metadata,
             })
@@ -359,7 +513,7 @@ fn parse_session(args: &[&str]) -> Result<SigilCommand, String> {
                 }
                 Ok(SigilCommand::SessionRevokeAll {
                     schema: args[3].to_string(),
-                    user_id: args[4].to_string(),
+                    entity_id: args[4].to_string(),
                 })
             } else {
                 if args.len() < 4 {
@@ -377,10 +531,58 @@ fn parse_session(args: &[&str]) -> Result<SigilCommand, String> {
             }
             Ok(SigilCommand::SessionList {
                 schema: args[2].to_string(),
-                user_id: args[3].to_string(),
+                entity_id: args[3].to_string(),
             })
         }
         sub => Err(format!("unknown SESSION subcommand: {sub}")),
+    }
+}
+
+fn parse_credential(args: &[&str]) -> Result<SigilCommand, String> {
+    if args.len() < 2 {
+        return Err("CREDENTIAL requires a subcommand".into());
+    }
+    match args[1].to_uppercase().as_str() {
+        "CHANGE" => {
+            if args.len() < 7 {
+                return Err("CREDENTIAL CHANGE <schema> <id> <field> <old> <new>".into());
+            }
+            Ok(SigilCommand::CredentialChange {
+                schema: args[2].to_string(),
+                entity_id: args[3].to_string(),
+                field: args[4].to_string(),
+                old_value: args[5].to_string(),
+                new_value: args[6].to_string(),
+            })
+        }
+        "RESET" => {
+            if args.len() < 6 {
+                return Err("CREDENTIAL RESET <schema> <id> <field> <new>".into());
+            }
+            Ok(SigilCommand::CredentialReset {
+                schema: args[2].to_string(),
+                entity_id: args[3].to_string(),
+                field: args[4].to_string(),
+                new_value: args[5].to_string(),
+            })
+        }
+        "IMPORT" => {
+            if args.len() < 6 {
+                return Err("CREDENTIAL IMPORT <schema> <id> <field> <hash> [META <json>]".into());
+            }
+            let metadata = find_option(args, "META")
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|e| format!("invalid META JSON: {e}"))?;
+            Ok(SigilCommand::CredentialImport {
+                schema: args[2].to_string(),
+                entity_id: args[3].to_string(),
+                field: args[4].to_string(),
+                hash: args[5].to_string(),
+                metadata,
+            })
+        }
+        sub => Err(format!("unknown CREDENTIAL subcommand: {sub}")),
     }
 }
 
@@ -463,6 +665,31 @@ mod tests {
     }
 
     #[test]
+    fn parse_envelope_create() {
+        let args = vec![
+            "ENVELOPE",
+            "CREATE",
+            "services",
+            "svc1",
+            r#"{"api_key":"secret","endpoint":"https://api.example.com"}"#,
+        ];
+        let cmd = parse_command(&args).unwrap();
+        assert!(
+            matches!(cmd, SigilCommand::EnvelopeCreate { schema, entity_id, .. } if schema == "services" && entity_id == "svc1")
+        );
+    }
+
+    #[test]
+    fn parse_envelope_verify() {
+        let args = vec!["ENVELOPE", "VERIFY", "myapp", "user1", "password", "secret"];
+        let cmd = parse_command(&args).unwrap();
+        assert!(
+            matches!(cmd, SigilCommand::EnvelopeVerify { schema, entity_id, field, value }
+                if schema == "myapp" && entity_id == "user1" && field == "password" && value == "secret")
+        );
+    }
+
+    #[test]
     fn parse_user_create() {
         let args = vec![
             "USER",
@@ -503,8 +730,28 @@ mod tests {
         let args = vec!["SESSION", "REVOKE", "ALL", "myapp", "user1"];
         let cmd = parse_command(&args).unwrap();
         assert!(
-            matches!(cmd, SigilCommand::SessionRevokeAll { schema, user_id } if schema == "myapp" && user_id == "user1")
+            matches!(cmd, SigilCommand::SessionRevokeAll { schema, entity_id } if schema == "myapp" && entity_id == "user1")
         );
+    }
+
+    #[test]
+    fn parse_credential_change() {
+        let args = vec![
+            "CREDENTIAL",
+            "CHANGE",
+            "myapp",
+            "user1",
+            "password",
+            "old",
+            "new",
+        ];
+        let cmd = parse_command(&args).unwrap();
+        assert!(matches!(
+            cmd,
+            SigilCommand::CredentialChange {
+                field, old_value, new_value, ..
+            } if field == "password" && old_value == "old" && new_value == "new"
+        ));
     }
 
     #[test]

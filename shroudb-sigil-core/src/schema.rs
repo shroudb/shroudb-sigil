@@ -42,7 +42,6 @@ impl Schema {
         }
 
         // Validate individual fields
-        let mut credential_count = 0;
         let mut seen_names = std::collections::HashSet::new();
 
         for field in &self.fields {
@@ -54,19 +53,34 @@ impl Schema {
                     field.name
                 )));
             }
-
-            if field.annotations.credential {
-                credential_count += 1;
-            }
-        }
-
-        if credential_count > 1 {
-            return Err(SigilError::SchemaValidation(
-                "at most one credential field per schema".into(),
-            ));
         }
 
         Ok(())
+    }
+
+    /// Returns the names of all credential-annotated fields.
+    pub fn credential_fields(&self) -> Vec<&str> {
+        self.fields
+            .iter()
+            .filter(|f| f.annotations.credential)
+            .map(|f| f.name.as_str())
+            .collect()
+    }
+
+    /// Returns the single credential field name, or an error if zero or
+    /// multiple credential fields exist. Used by the `USER` command sugar
+    /// where the credential field is inferred from the schema.
+    pub fn credential_field_name(&self) -> Result<&str, SigilError> {
+        let creds = self.credential_fields();
+        match creds.len() {
+            0 => Err(SigilError::SchemaValidation(
+                "schema has no credential field".into(),
+            )),
+            1 => Ok(creds[0]),
+            _ => Err(SigilError::SchemaValidation(
+                "schema has multiple credential fields; use ENVELOPE VERIFY with explicit field name".into(),
+            )),
+        }
     }
 }
 
@@ -232,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_credential_fields_rejected() {
+    fn multiple_credential_fields_allowed() {
         let s = schema(
             "myapp",
             vec![
@@ -240,8 +254,9 @@ mod tests {
                 field("pin", |a| a.credential = true),
             ],
         );
-        let err = s.validate().unwrap_err();
-        assert!(err.to_string().contains("at most one credential"));
+        assert!(s.validate().is_ok());
+        assert_eq!(s.credential_fields().len(), 2);
+        assert!(s.credential_field_name().is_err());
     }
 
     #[test]

@@ -8,11 +8,16 @@ use shroudb_sigil_core::credential::{CredentialRecord, PasswordAlgorithm, Passwo
 use shroudb_sigil_core::error::SigilError;
 use shroudb_store::Store;
 
-/// Manages credential (password) fields via the Store trait.
+use crate::write_coordinator::credential_store_key;
+
+/// Manages credential fields via the Store trait.
 ///
 /// Sigil owns password hashing directly — the Store just sees opaque bytes.
 /// This is the clean break from v0.1 where ShrouDB-the-credential-store
 /// owned hashing because it *was* the credential engine.
+///
+/// Credentials are keyed by `{entity_id}/{field_name}`, supporting
+/// multiple credential fields per schema (e.g., password + recovery_key).
 pub struct CredentialManager<S: Store> {
     store: Arc<S>,
     policy: PasswordPolicy,
@@ -23,24 +28,32 @@ impl<S: Store> CredentialManager<S> {
         Self { store, policy }
     }
 
-    /// Hash a new password and store the credential record.
-    pub async fn set_password(
+    /// Hash a new credential and store the credential record.
+    pub async fn set_credential(
         &self,
         schema: &str,
-        user_id: &str,
+        entity_id: &str,
+        field_name: &str,
         plaintext: &str,
     ) -> Result<(), SigilError> {
         self.validate_password_length(plaintext)?;
 
-        // Check for existing credential
         let ns = credentials_namespace(schema);
-        if self.store.get(&ns, user_id.as_bytes(), None).await.is_ok() {
-            return Err(SigilError::UserExists);
+        let store_key = credential_store_key(entity_id, field_name);
+
+        // Check for existing credential
+        if self
+            .store
+            .get(&ns, store_key.as_bytes(), None)
+            .await
+            .is_ok()
+        {
+            return Err(SigilError::EntityExists);
         }
 
         let hash = hash_argon2id(plaintext)?;
         let record = CredentialRecord {
-            user_id: user_id.to_string(),
+            entity_id: entity_id.to_string(),
             hash,
             algorithm: PasswordAlgorithm::Argon2id,
             failed_attempts: 0,
@@ -51,32 +64,40 @@ impl<S: Store> CredentialManager<S> {
 
         let value = serde_json::to_vec(&record).map_err(|e| SigilError::Internal(e.to_string()))?;
         self.store
-            .put(&ns, user_id.as_bytes(), &value, None)
+            .put(&ns, store_key.as_bytes(), &value, None)
             .await
             .map_err(|e| SigilError::Store(e.to_string()))?;
 
         Ok(())
     }
 
-    /// Import a pre-hashed password. Validates the hash format and detects
+    /// Import a pre-hashed credential. Validates the hash format and detects
     /// the algorithm. On next verify, non-Argon2id hashes are transparently
     /// rehashed.
-    pub async fn import_password(
+    pub async fn import_credential(
         &self,
         schema: &str,
-        user_id: &str,
+        entity_id: &str,
+        field_name: &str,
         hash: &str,
     ) -> Result<PasswordAlgorithm, SigilError> {
         let ns = credentials_namespace(schema);
-        if self.store.get(&ns, user_id.as_bytes(), None).await.is_ok() {
-            return Err(SigilError::UserExists);
+        let store_key = credential_store_key(entity_id, field_name);
+
+        if self
+            .store
+            .get(&ns, store_key.as_bytes(), None)
+            .await
+            .is_ok()
+        {
+            return Err(SigilError::EntityExists);
         }
 
         let algorithm = detect_algorithm(hash)?;
         validate_hash_format(hash)?;
 
         let record = CredentialRecord {
-            user_id: user_id.to_string(),
+            entity_id: entity_id.to_string(),
             hash: hash.to_string(),
             algorithm,
             failed_attempts: 0,
@@ -87,29 +108,32 @@ impl<S: Store> CredentialManager<S> {
 
         let value = serde_json::to_vec(&record).map_err(|e| SigilError::Internal(e.to_string()))?;
         self.store
-            .put(&ns, user_id.as_bytes(), &value, None)
+            .put(&ns, store_key.as_bytes(), &value, None)
             .await
             .map_err(|e| SigilError::Store(e.to_string()))?;
 
         Ok(algorithm)
     }
 
-    /// Verify a password. Handles lockout and transparent rehash.
+    /// Verify a credential. Handles lockout and transparent rehash.
     ///
     /// Returns `Ok(true)` on success, `Err(AccountLocked)` if locked,
     /// `Err(VerificationFailed)` on wrong password.
     pub async fn verify(
         &self,
         schema: &str,
-        user_id: &str,
+        entity_id: &str,
+        field_name: &str,
         plaintext: &str,
     ) -> Result<bool, SigilError> {
         let ns = credentials_namespace(schema);
+        let store_key = credential_store_key(entity_id, field_name);
+
         let entry = self
             .store
-            .get(&ns, user_id.as_bytes(), None)
+            .get(&ns, store_key.as_bytes(), None)
             .await
-            .map_err(|_| SigilError::UserNotFound)?;
+            .map_err(|_| SigilError::EntityNotFound)?;
 
         let mut record: CredentialRecord = serde_json::from_slice(&entry.value)
             .map_err(|e| SigilError::Internal(e.to_string()))?;
@@ -126,7 +150,7 @@ impl<S: Store> CredentialManager<S> {
             record.failed_attempts = 0;
         }
 
-        // Verify password against stored hash (any algorithm)
+        // Verify credential against stored hash (any algorithm)
         let valid = verify_password(plaintext, &record.hash)?;
 
         if valid {
@@ -138,7 +162,7 @@ impl<S: Store> CredentialManager<S> {
                 let new_hash = hash_argon2id(plaintext)?;
                 record.hash = new_hash;
                 record.algorithm = PasswordAlgorithm::Argon2id;
-                tracing::info!(user_id, "transparent rehash to argon2id");
+                tracing::info!(entity_id, field_name, "transparent rehash to argon2id");
             }
         } else {
             record.failed_attempts += 1;
@@ -151,7 +175,7 @@ impl<S: Store> CredentialManager<S> {
         record.updated_at = now();
         let value = serde_json::to_vec(&record).map_err(|e| SigilError::Internal(e.to_string()))?;
         self.store
-            .put(&ns, user_id.as_bytes(), &value, None)
+            .put(&ns, store_key.as_bytes(), &value, None)
             .await
             .map_err(|e| SigilError::Store(e.to_string()))?;
 
@@ -162,28 +186,32 @@ impl<S: Store> CredentialManager<S> {
         }
     }
 
-    /// Change password (requires old password verification).
-    pub async fn change_password(
+    /// Change credential (requires old value verification).
+    pub async fn change_credential(
         &self,
         schema: &str,
-        user_id: &str,
+        entity_id: &str,
+        field_name: &str,
         old_plaintext: &str,
         new_plaintext: &str,
     ) -> Result<(), SigilError> {
         self.validate_password_length(new_plaintext)?;
 
-        // Verify old password (this also handles lockout)
-        self.verify(schema, user_id, old_plaintext).await?;
+        // Verify old credential (this also handles lockout)
+        self.verify(schema, entity_id, field_name, old_plaintext)
+            .await?;
 
-        // Hash new password
+        // Hash new credential
         let new_hash = hash_argon2id(new_plaintext)?;
 
         let ns = credentials_namespace(schema);
+        let store_key = credential_store_key(entity_id, field_name);
+
         let entry = self
             .store
-            .get(&ns, user_id.as_bytes(), None)
+            .get(&ns, store_key.as_bytes(), None)
             .await
-            .map_err(|_| SigilError::UserNotFound)?;
+            .map_err(|_| SigilError::EntityNotFound)?;
 
         let mut record: CredentialRecord = serde_json::from_slice(&entry.value)
             .map_err(|e| SigilError::Internal(e.to_string()))?;
@@ -196,19 +224,20 @@ impl<S: Store> CredentialManager<S> {
 
         let value = serde_json::to_vec(&record).map_err(|e| SigilError::Internal(e.to_string()))?;
         self.store
-            .put(&ns, user_id.as_bytes(), &value, None)
+            .put(&ns, store_key.as_bytes(), &value, None)
             .await
             .map_err(|e| SigilError::Store(e.to_string()))?;
 
         Ok(())
     }
 
-    /// Force-reset a password without requiring the old one.
+    /// Force-reset a credential without requiring the old one.
     /// Clears lockout state.
-    pub async fn reset_password(
+    pub async fn reset_credential(
         &self,
         schema: &str,
-        user_id: &str,
+        entity_id: &str,
+        field_name: &str,
         new_plaintext: &str,
     ) -> Result<(), SigilError> {
         self.validate_password_length(new_plaintext)?;
@@ -216,11 +245,13 @@ impl<S: Store> CredentialManager<S> {
         let new_hash = hash_argon2id(new_plaintext)?;
 
         let ns = credentials_namespace(schema);
+        let store_key = credential_store_key(entity_id, field_name);
+
         let entry = self
             .store
-            .get(&ns, user_id.as_bytes(), None)
+            .get(&ns, store_key.as_bytes(), None)
             .await
-            .map_err(|_| SigilError::UserNotFound)?;
+            .map_err(|_| SigilError::EntityNotFound)?;
 
         let mut record: CredentialRecord = serde_json::from_slice(&entry.value)
             .map_err(|e| SigilError::Internal(e.to_string()))?;
@@ -233,7 +264,7 @@ impl<S: Store> CredentialManager<S> {
 
         let value = serde_json::to_vec(&record).map_err(|e| SigilError::Internal(e.to_string()))?;
         self.store
-            .put(&ns, user_id.as_bytes(), &value, None)
+            .put(&ns, store_key.as_bytes(), &value, None)
             .await
             .map_err(|e| SigilError::Store(e.to_string()))?;
 
@@ -243,13 +274,13 @@ impl<S: Store> CredentialManager<S> {
     fn validate_password_length(&self, plaintext: &str) -> Result<(), SigilError> {
         if plaintext.len() < self.policy.min_length {
             return Err(SigilError::InvalidField {
-                field: "password".into(),
+                field: "credential".into(),
                 reason: format!("must be at least {} characters", self.policy.min_length),
             });
         }
         if plaintext.len() > self.policy.max_length {
             return Err(SigilError::InvalidField {
-                field: "password".into(),
+                field: "credential".into(),
                 reason: format!("must be at most {} characters", self.policy.max_length),
             });
         }
@@ -366,33 +397,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_and_verify_password() {
+    async fn set_and_verify_credential() {
         let (_store, mgr) = setup().await;
-        mgr.set_password("myapp", "user1", "correcthorse")
+        mgr.set_credential("myapp", "user1", "password", "correcthorse")
             .await
             .unwrap();
-        let valid = mgr.verify("myapp", "user1", "correcthorse").await.unwrap();
+        let valid = mgr
+            .verify("myapp", "user1", "password", "correcthorse")
+            .await
+            .unwrap();
         assert!(valid);
     }
 
     #[tokio::test]
-    async fn wrong_password_fails() {
+    async fn wrong_credential_fails() {
         let (_store, mgr) = setup().await;
-        mgr.set_password("myapp", "user1", "correcthorse")
+        mgr.set_credential("myapp", "user1", "password", "correcthorse")
             .await
             .unwrap();
-        let err = mgr.verify("myapp", "user1", "wrongpassword").await;
+        let err = mgr
+            .verify("myapp", "user1", "password", "wrongpassword")
+            .await;
         assert!(err.is_err());
     }
 
     #[tokio::test]
     async fn duplicate_set_rejected() {
         let (_store, mgr) = setup().await;
-        mgr.set_password("myapp", "user1", "password1")
+        mgr.set_credential("myapp", "user1", "password", "password1")
             .await
             .unwrap();
         let err = mgr
-            .set_password("myapp", "user1", "password2")
+            .set_credential("myapp", "user1", "password", "password2")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("already exists"));
@@ -401,59 +437,75 @@ mod tests {
     #[tokio::test]
     async fn lockout_after_failed_attempts() {
         let (_store, mgr) = setup().await;
-        mgr.set_password("myapp", "user1", "correcthorse")
+        mgr.set_credential("myapp", "user1", "password", "correcthorse")
             .await
             .unwrap();
 
         // Exhaust attempts (default: 5)
         for _ in 0..5 {
-            let _ = mgr.verify("myapp", "user1", "wrong").await;
+            let _ = mgr.verify("myapp", "user1", "password", "wrong").await;
         }
 
         // Next attempt should be locked
         let err = mgr
-            .verify("myapp", "user1", "correcthorse")
+            .verify("myapp", "user1", "password", "correcthorse")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("locked"));
     }
 
     #[tokio::test]
-    async fn change_password() {
+    async fn change_credential() {
         let (_store, mgr) = setup().await;
-        mgr.set_password("myapp", "user1", "oldpassword")
+        mgr.set_credential("myapp", "user1", "password", "oldpassword")
             .await
             .unwrap();
-        mgr.change_password("myapp", "user1", "oldpassword", "newpassword")
+        mgr.change_credential("myapp", "user1", "password", "oldpassword", "newpassword")
             .await
             .unwrap();
 
-        // Old password fails
-        assert!(mgr.verify("myapp", "user1", "oldpassword").await.is_err());
-        // New password works
-        assert!(mgr.verify("myapp", "user1", "newpassword").await.is_ok());
+        // Old credential fails
+        assert!(
+            mgr.verify("myapp", "user1", "password", "oldpassword")
+                .await
+                .is_err()
+        );
+        // New credential works
+        assert!(
+            mgr.verify("myapp", "user1", "password", "newpassword")
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
-    async fn reset_password_clears_lockout() {
+    async fn reset_credential_clears_lockout() {
         let (_store, mgr) = setup().await;
-        mgr.set_password("myapp", "user1", "original")
+        mgr.set_credential("myapp", "user1", "password", "original")
             .await
             .unwrap();
 
         // Lock the account
         for _ in 0..5 {
-            let _ = mgr.verify("myapp", "user1", "wrong").await;
+            let _ = mgr.verify("myapp", "user1", "password", "wrong").await;
         }
-        assert!(mgr.verify("myapp", "user1", "original").await.is_err());
+        assert!(
+            mgr.verify("myapp", "user1", "password", "original")
+                .await
+                .is_err()
+        );
 
         // Reset
-        mgr.reset_password("myapp", "user1", "newpassword")
+        mgr.reset_credential("myapp", "user1", "password", "newpassword")
             .await
             .unwrap();
 
         // Should work now (lockout cleared)
-        assert!(mgr.verify("myapp", "user1", "newpassword").await.is_ok());
+        assert!(
+            mgr.verify("myapp", "user1", "password", "newpassword")
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -462,28 +514,68 @@ mod tests {
 
         // Generate a real argon2id hash
         let hash = hash_argon2id("imported_pw").unwrap();
-        let algo = mgr.import_password("myapp", "user1", &hash).await.unwrap();
+        let algo = mgr
+            .import_credential("myapp", "user1", "password", &hash)
+            .await
+            .unwrap();
         assert_eq!(algo, PasswordAlgorithm::Argon2id);
 
         // Verify works
-        assert!(mgr.verify("myapp", "user1", "imported_pw").await.is_ok());
+        assert!(
+            mgr.verify("myapp", "user1", "password", "imported_pw")
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
-    async fn password_too_short_rejected() {
+    async fn credential_too_short_rejected() {
         let (_store, mgr) = setup().await;
         let err = mgr
-            .set_password("myapp", "user1", "short")
+            .set_credential("myapp", "user1", "password", "short")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("at least"));
     }
 
     #[tokio::test]
-    async fn verify_nonexistent_user() {
+    async fn verify_nonexistent_entity() {
         let (_store, mgr) = setup().await;
-        let err = mgr.verify("myapp", "nope", "password").await.unwrap_err();
+        let err = mgr
+            .verify("myapp", "nope", "password", "password")
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn multi_credential_fields() {
+        let (_store, mgr) = setup().await;
+        mgr.set_credential("myapp", "user1", "password", "correcthorse")
+            .await
+            .unwrap();
+        mgr.set_credential("myapp", "user1", "recovery_key", "my-recovery-key-123")
+            .await
+            .unwrap();
+
+        // Each verifies independently
+        assert!(
+            mgr.verify("myapp", "user1", "password", "correcthorse")
+                .await
+                .is_ok()
+        );
+        assert!(
+            mgr.verify("myapp", "user1", "recovery_key", "my-recovery-key-123")
+                .await
+                .is_ok()
+        );
+
+        // Cross-verify fails
+        assert!(
+            mgr.verify("myapp", "user1", "password", "my-recovery-key-123")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

@@ -21,7 +21,6 @@ shroudb-store.workspace = true
 shroudb-storage.workspace = true
 shroudb-veil-client.workspace = true
 shroudb-crypto.workspace = true
-ring.workspace = true
 shroudb-protocol-wire.workspace = true
 
 axum.workspace = true
@@ -37,7 +36,6 @@ metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 anyhow.workspace = true
 uuid.workspace = true
-libc = "0.2"
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json", "cookies"] }

@@ -4,7 +4,9 @@ Schema-driven credential envelope engine for ShrouDB.
 
 ## Identity
 
-Sigil is a **field-level crypto router**, not an auth service. Developers register a credential schema with annotations (`credential`, `pii`, `searchable`, `secret`, `index`), and Sigil applies the correct cryptographic treatment per field automatically. The Store just sees opaque bytes.
+Sigil is a **field-level crypto router**, not an auth service. Developers register a credential envelope schema with annotations (`credential`, `pii`, `searchable`, `secret`, `index`), and Sigil applies the correct cryptographic treatment per field automatically. The Store just sees opaque bytes.
+
+Sigil is entity-agnostic. The generic `ENVELOPE` commands work with any entity type — users, services, devices, API clients. The `USER` and `PASSWORD` commands are sugar that infer the credential field from the schema. Internally, both paths use the same `EnvelopeRecord` and `entity_id` throughout.
 
 Sigil owns domain crypto directly. In ShrouDB v0.1, the credential store owned password hashing because it *was* the credential engine. In v1, ShrouDB is a generic KV store — it has no business knowing about Argon2id or JWT signing. Sigil owns the credential domain, so Sigil owns the crypto for that domain. Do not push hashing or signing back down into the Store.
 
@@ -44,7 +46,7 @@ cargo deny check
 ## Architecture
 
 ```
-shroudb-sigil-core/        — domain types (Schema, FieldAnnotations, CredentialRecord, etc.)
+shroudb-sigil-core/        — domain types (Schema, EnvelopeRecord, CredentialRecord, etc.)
 shroudb-sigil-engine/      — Store-backed logic (SigilEngine, schema registry, credential lifecycle)
 shroudb-sigil-protocol/    — RESP3 command parsing + dispatch (Moat integration path)
 shroudb-sigil-server/      — Axum HTTP + TCP binary (standalone deployment)

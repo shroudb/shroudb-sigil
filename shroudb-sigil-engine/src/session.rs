@@ -44,19 +44,19 @@ impl<S: Store> SessionManager<S> {
     pub async fn create_session(
         &self,
         schema: &str,
-        user_id: &str,
+        entity_id: &str,
         extra_claims: Option<&serde_json::Value>,
     ) -> Result<TokenPair, SigilError> {
         self.jwt.ensure_active_key(schema).await?;
 
         let family_id = uuid::Uuid::new_v4().to_string();
-        let refresh_token = generate_opaque_token();
+        let refresh_token = generate_opaque_token()?;
 
         // Store refresh token record
         let record = RefreshTokenRecord {
             token_id: uuid::Uuid::new_v4().to_string(),
             family_id,
-            user_id: user_id.to_string(),
+            entity_id: entity_id.to_string(),
             generation: 0,
             state: TokenState::Active,
             created_at: now(),
@@ -72,7 +72,7 @@ impl<S: Store> SessionManager<S> {
 
         // Sign access token
         let mut claims = serde_json::json!({
-            "sub": user_id,
+            "sub": entity_id,
         });
         if let Some(extra) = extra_claims
             && let Some(obj) = extra.as_object()
@@ -131,11 +131,11 @@ impl<S: Store> SessionManager<S> {
             .map_err(|e| SigilError::Store(e.to_string()))?;
 
         // Issue new refresh token in same family
-        let new_refresh = generate_opaque_token();
+        let new_refresh = generate_opaque_token()?;
         let new_record = RefreshTokenRecord {
             token_id: uuid::Uuid::new_v4().to_string(),
             family_id: record.family_id,
-            user_id: record.user_id.clone(),
+            entity_id: record.entity_id.clone(),
             generation: record.generation + 1,
             state: TokenState::Active,
             created_at: now(),
@@ -149,7 +149,7 @@ impl<S: Store> SessionManager<S> {
             .map_err(|e| SigilError::Store(e.to_string()))?;
 
         // Sign new access token
-        let claims = serde_json::json!({ "sub": record.user_id });
+        let claims = serde_json::json!({ "sub": record.entity_id });
         let access_token = self.jwt.sign(schema, &claims).await?;
 
         Ok(TokenPair {
@@ -181,8 +181,8 @@ impl<S: Store> SessionManager<S> {
         Ok(())
     }
 
-    /// Revoke all sessions for a user (logout everywhere).
-    pub async fn revoke_all(&self, schema: &str, user_id: &str) -> Result<u64, SigilError> {
+    /// Revoke all sessions for an entity (logout everywhere).
+    pub async fn revoke_all(&self, schema: &str, entity_id: &str) -> Result<u64, SigilError> {
         let ns = sessions_namespace(schema);
         let page = self
             .store
@@ -191,28 +191,34 @@ impl<S: Store> SessionManager<S> {
             .map_err(|e| SigilError::Store(e.to_string()))?;
 
         let mut revoked = 0u64;
+        let mut last_err: Option<SigilError> = None;
         for key in &page.keys {
             if let Ok(entry) = self.store.get(&ns, key, None).await
                 && let Ok(mut record) = serde_json::from_slice::<RefreshTokenRecord>(&entry.value)
-                && record.user_id == user_id
+                && record.entity_id == entity_id
                 && record.state == TokenState::Active
             {
                 record.state = TokenState::Revoked;
-                if let Ok(value) = serde_json::to_vec(&record) {
-                    let _ = self.store.put(&ns, key, &value, None).await;
-                    revoked += 1;
+                let value =
+                    serde_json::to_vec(&record).map_err(|e| SigilError::Internal(e.to_string()))?;
+                match self.store.put(&ns, key, &value, None).await {
+                    Ok(_) => revoked += 1,
+                    Err(e) => last_err = Some(SigilError::Store(e.to_string())),
                 }
             }
         }
 
+        if let Some(e) = last_err {
+            return Err(e);
+        }
         Ok(revoked)
     }
 
-    /// List active sessions for a user.
+    /// List active sessions for an entity.
     pub async fn list_sessions(
         &self,
         schema: &str,
-        user_id: &str,
+        entity_id: &str,
     ) -> Result<Vec<RefreshTokenRecord>, SigilError> {
         let ns = sessions_namespace(schema);
         let page = self
@@ -225,7 +231,7 @@ impl<S: Store> SessionManager<S> {
         for key in &page.keys {
             if let Ok(entry) = self.store.get(&ns, key, None).await
                 && let Ok(record) = serde_json::from_slice::<RefreshTokenRecord>(&entry.value)
-                && record.user_id == user_id
+                && record.entity_id == entity_id
                 && record.state == TokenState::Active
                 && now() <= record.expires_at
             {
@@ -251,9 +257,12 @@ impl<S: Store> SessionManager<S> {
                 && record.family_id == family_id
             {
                 record.state = TokenState::Revoked;
-                if let Ok(value) = serde_json::to_vec(&record) {
-                    let _ = self.store.put(&ns, key, &value, None).await;
-                }
+                let value =
+                    serde_json::to_vec(&record).map_err(|e| SigilError::Internal(e.to_string()))?;
+                self.store
+                    .put(&ns, key, &value, None)
+                    .await
+                    .map_err(|e| SigilError::Store(e.to_string()))?;
             }
         }
 
@@ -273,15 +282,14 @@ fn now() -> u64 {
 }
 
 /// Generate a cryptographically random opaque token.
-fn generate_opaque_token() -> String {
+fn generate_opaque_token() -> Result<String, SigilError> {
+    use ring::rand::SecureRandom;
     let mut bytes = [0u8; 32];
     ring::rand::SystemRandom::new()
         .fill(&mut bytes)
-        .expect("system random failed");
-    hex::encode(bytes)
+        .map_err(|_| SigilError::Internal("CSPRNG failed".into()))?;
+    Ok(hex::encode(bytes))
 }
-
-use ring::rand::SecureRandom;
 
 #[cfg(test)]
 mod tests {

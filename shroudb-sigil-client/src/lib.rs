@@ -47,14 +47,17 @@ pub struct TokenPair {
     pub expires_in: u64,
 }
 
-/// Response from a user create or get operation.
+/// Response from an envelope create or get operation.
 #[derive(Debug, Clone)]
-pub struct UserRecord {
-    pub user_id: String,
+pub struct EnvelopeRecord {
+    pub entity_id: String,
     pub fields: serde_json::Value,
     pub created_at: Option<u64>,
     pub updated_at: Option<u64>,
 }
+
+/// Backward-compatible type alias.
+pub type UserRecord = EnvelopeRecord;
 
 /// A Sigil client connected via TCP.
 pub struct SigilClient {
@@ -123,7 +126,7 @@ impl SigilClient {
             .command(&["USER", "CREATE", schema, user_id, &json])
             .await?;
         check_status(&resp)?;
-        parse_user_record(&resp)
+        parse_envelope_record(&resp)
     }
 
     /// Import a user with pre-hashed credential fields.
@@ -140,7 +143,7 @@ impl SigilClient {
             .command(&["USER", "IMPORT", schema, user_id, &json])
             .await?;
         check_status(&resp)?;
-        parse_user_record(&resp)
+        parse_envelope_record(&resp)
     }
 
     /// Get a user record.
@@ -150,7 +153,7 @@ impl SigilClient {
         user_id: &str,
     ) -> Result<UserRecord, ClientError> {
         let resp = self.command(&["USER", "GET", schema, user_id]).await?;
-        parse_user_record(&resp)
+        parse_envelope_record(&resp)
     }
 
     /// Update non-credential fields.
@@ -166,7 +169,7 @@ impl SigilClient {
             .command(&["USER", "UPDATE", schema, user_id, &json])
             .await?;
         check_status(&resp)?;
-        parse_user_record(&resp)
+        parse_envelope_record(&resp)
     }
 
     /// Delete a user.
@@ -357,11 +360,11 @@ fn parse_token_pair(resp: &serde_json::Value) -> Result<TokenPair, ClientError> 
     })
 }
 
-fn parse_user_record(resp: &serde_json::Value) -> Result<UserRecord, ClientError> {
-    Ok(UserRecord {
-        user_id: resp["user_id"]
+fn parse_envelope_record(resp: &serde_json::Value) -> Result<EnvelopeRecord, ClientError> {
+    Ok(EnvelopeRecord {
+        entity_id: resp["entity_id"]
             .as_str()
-            .ok_or_else(|| ClientError::ResponseFormat("missing user_id".into()))?
+            .ok_or_else(|| ClientError::ResponseFormat("missing entity_id".into()))?
             .to_string(),
         fields: resp["fields"].clone(),
         created_at: resp["created_at"].as_u64(),

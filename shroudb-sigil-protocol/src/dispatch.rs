@@ -47,7 +47,100 @@ pub async fn dispatch<S: Store>(
             Err(e) => SigilResponse::error(e.to_string()),
         },
 
-        // ── User ────────────────────────────────────────────────────
+        // ── Envelope (generic) ─────────────────────────────────────
+        SigilCommand::EnvelopeCreate {
+            schema,
+            entity_id,
+            fields,
+        } => match engine.envelope_create(&schema, &entity_id, &fields).await {
+            Ok(record) => SigilResponse::ok(serde_json::json!({
+                "status": "ok",
+                "entity_id": record.entity_id,
+                "fields": record.fields,
+                "created_at": record.created_at,
+            })),
+            Err(e) => SigilResponse::error(e.to_string()),
+        },
+
+        SigilCommand::EnvelopeImport {
+            schema,
+            entity_id,
+            fields,
+        } => match engine.envelope_import(&schema, &entity_id, &fields).await {
+            Ok(record) => SigilResponse::ok(serde_json::json!({
+                "status": "ok",
+                "entity_id": record.entity_id,
+                "fields": record.fields,
+                "created_at": record.created_at,
+            })),
+            Err(e) => SigilResponse::error(e.to_string()),
+        },
+
+        SigilCommand::EnvelopeUpdate {
+            schema,
+            entity_id,
+            fields,
+        } => match engine.envelope_update(&schema, &entity_id, &fields).await {
+            Ok(record) => SigilResponse::ok(serde_json::json!({
+                "status": "ok",
+                "entity_id": record.entity_id,
+                "fields": record.fields,
+                "updated_at": record.updated_at,
+            })),
+            Err(e) => SigilResponse::error(e.to_string()),
+        },
+
+        SigilCommand::EnvelopeGet { schema, entity_id } => {
+            match engine.envelope_get(&schema, &entity_id).await {
+                Ok(record) => SigilResponse::ok(serde_json::json!({
+                    "entity_id": record.entity_id,
+                    "fields": record.fields,
+                    "created_at": record.created_at,
+                    "updated_at": record.updated_at,
+                })),
+                Err(e) => SigilResponse::error(e.to_string()),
+            }
+        }
+
+        SigilCommand::EnvelopeDelete { schema, entity_id } => {
+            match engine.envelope_delete(&schema, &entity_id).await {
+                Ok(()) => SigilResponse::ok_simple(),
+                Err(e) => SigilResponse::error(e.to_string()),
+            }
+        }
+
+        SigilCommand::EnvelopeVerify {
+            schema,
+            entity_id,
+            field,
+            value,
+        } => match engine
+            .envelope_verify(&schema, &entity_id, &field, &value)
+            .await
+        {
+            Ok(valid) => SigilResponse::ok(serde_json::json!({
+                "status": "ok",
+                "valid": valid,
+            })),
+            Err(e) => SigilResponse::error(e.to_string()),
+        },
+
+        SigilCommand::EnvelopeLookup {
+            schema,
+            field_name,
+            field_value,
+        } => match engine
+            .envelope_lookup(&schema, &field_name, &field_value)
+            .await
+        {
+            Ok(entity_id) => SigilResponse::ok(serde_json::json!({
+                "status": "ok",
+                "entity_id": entity_id,
+            })),
+            Err(e) => SigilResponse::error(e.to_string()),
+        },
+
+        // ── User (sugar) ───────────────────────────────────────────
         SigilCommand::UserCreate {
             schema,
             user_id,
@@ -55,7 +148,7 @@ pub async fn dispatch<S: Store>(
         } => match engine.user_create(&schema, &user_id, &fields).await {
             Ok(record) => SigilResponse::ok(serde_json::json!({
                 "status": "ok",
-                "user_id": record.user_id,
+                "entity_id": record.entity_id,
                 "fields": record.fields,
                 "created_at": record.created_at,
             })),
@@ -69,7 +162,7 @@ pub async fn dispatch<S: Store>(
         } => match engine.user_import(&schema, &user_id, &fields).await {
             Ok(record) => SigilResponse::ok(serde_json::json!({
                 "status": "ok",
-                "user_id": record.user_id,
+                "entity_id": record.entity_id,
                 "fields": record.fields,
                 "created_at": record.created_at,
             })),
@@ -83,7 +176,7 @@ pub async fn dispatch<S: Store>(
         } => match engine.user_update(&schema, &user_id, &fields).await {
             Ok(record) => SigilResponse::ok(serde_json::json!({
                 "status": "ok",
-                "user_id": record.user_id,
+                "entity_id": record.entity_id,
                 "fields": record.fields,
                 "updated_at": record.updated_at,
             })),
@@ -93,7 +186,7 @@ pub async fn dispatch<S: Store>(
         SigilCommand::UserGet { schema, user_id } => {
             match engine.user_get(&schema, &user_id).await {
                 Ok(record) => SigilResponse::ok(serde_json::json!({
-                    "user_id": record.user_id,
+                    "entity_id": record.entity_id,
                     "fields": record.fields,
                     "created_at": record.created_at,
                     "updated_at": record.updated_at,
@@ -126,9 +219,9 @@ pub async fn dispatch<S: Store>(
             field_name,
             field_value,
         } => match engine.user_lookup(&schema, &field_name, &field_value).await {
-            Ok(user_id) => SigilResponse::ok(serde_json::json!({
+            Ok(entity_id) => SigilResponse::ok(serde_json::json!({
                 "status": "ok",
-                "user_id": user_id,
+                "entity_id": entity_id,
             })),
             Err(e) => SigilResponse::error(e.to_string()),
         },
@@ -136,12 +229,12 @@ pub async fn dispatch<S: Store>(
         // ── Session ─────────────────────────────────────────────────
         SigilCommand::SessionCreate {
             schema,
-            user_id,
+            entity_id,
             password,
             metadata,
         } => {
             match engine
-                .session_create(&schema, &user_id, &password, metadata.as_ref())
+                .session_create(&schema, &entity_id, &password, metadata.as_ref())
                 .await
             {
                 Ok(pair) => SigilResponse::ok(serde_json::json!({
@@ -200,8 +293,8 @@ pub async fn dispatch<S: Store>(
             }
         }
 
-        SigilCommand::SessionRevokeAll { schema, user_id } => {
-            match engine.session_revoke_all(&schema, &user_id).await {
+        SigilCommand::SessionRevokeAll { schema, entity_id } => {
+            match engine.session_revoke_all(&schema, &entity_id).await {
                 Ok(count) => SigilResponse::ok(serde_json::json!({
                     "status": "ok",
                     "revoked": count,
@@ -210,8 +303,8 @@ pub async fn dispatch<S: Store>(
             }
         }
 
-        SigilCommand::SessionList { schema, user_id } => {
-            match engine.session_list(&schema, &user_id).await {
+        SigilCommand::SessionList { schema, entity_id } => {
+            match engine.session_list(&schema, &entity_id).await {
                 Ok(sessions) => {
                     let items: Vec<serde_json::Value> = sessions
                         .iter()
@@ -230,7 +323,56 @@ pub async fn dispatch<S: Store>(
             }
         }
 
-        // ── Password ────────────────────────────────────────────────
+        // ── Credential (generic) ────────────────────────────────────
+        SigilCommand::CredentialChange {
+            schema,
+            entity_id,
+            field,
+            old_value,
+            new_value,
+        } => {
+            match engine
+                .credential_change(&schema, &entity_id, &field, &old_value, &new_value)
+                .await
+            {
+                Ok(()) => SigilResponse::ok_simple(),
+                Err(e) => SigilResponse::error(e.to_string()),
+            }
+        }
+
+        SigilCommand::CredentialReset {
+            schema,
+            entity_id,
+            field,
+            new_value,
+        } => {
+            match engine
+                .credential_reset(&schema, &entity_id, &field, &new_value)
+                .await
+            {
+                Ok(()) => SigilResponse::ok_simple(),
+                Err(e) => SigilResponse::error(e.to_string()),
+            }
+        }
+
+        SigilCommand::CredentialImport {
+            schema,
+            entity_id,
+            field,
+            hash,
+            ..
+        } => match engine
+            .credential_import(&schema, &entity_id, &field, &hash)
+            .await
+        {
+            Ok(algo) => SigilResponse::ok(serde_json::json!({
+                "status": "ok",
+                "algorithm": format!("{algo:?}").to_lowercase(),
+            })),
+            Err(e) => SigilResponse::error(e.to_string()),
+        },
+
+        // ── Password (sugar) ────────────────────────────────────────
         SigilCommand::PasswordChange {
             schema,
             user_id,
@@ -286,52 +428,16 @@ pub async fn dispatch<S: Store>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
     use crate::commands::parse_command;
     use shroudb_sigil_engine::capabilities::Capabilities;
     use shroudb_sigil_engine::engine::SigilConfig;
 
     async fn setup() -> SigilEngine<shroudb_storage::EmbeddedStore> {
-        let store = create_test_store().await;
+        let store = shroudb_storage::test_util::create_test_store("sigil-test").await;
         SigilEngine::new(store, SigilConfig::default(), Capabilities::default())
             .await
             .unwrap()
-    }
-
-    async fn create_test_store() -> Arc<shroudb_storage::EmbeddedStore> {
-        let dir = tempfile::tempdir().unwrap().keep();
-        let config = shroudb_storage::StorageEngineConfig {
-            data_dir: dir,
-            ..Default::default()
-        };
-        let engine = shroudb_storage::StorageEngine::open(config, &EphemeralKey)
-            .await
-            .unwrap();
-        Arc::new(shroudb_storage::EmbeddedStore::new(
-            Arc::new(engine),
-            "sigil-test",
-        ))
-    }
-
-    struct EphemeralKey;
-    impl shroudb_storage::MasterKeySource for EphemeralKey {
-        fn source_name(&self) -> &str {
-            "ephemeral-test"
-        }
-        fn load<'a>(
-            &'a self,
-        ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<
-                        Output = Result<shroudb_crypto::SecretBytes, shroudb_storage::StorageError>,
-                    > + Send
-                    + 'a,
-            >,
-        > {
-            Box::pin(async { Ok(shroudb_crypto::SecretBytes::new(vec![0x42u8; 32])) })
-        }
     }
 
     #[tokio::test]
@@ -349,7 +455,7 @@ mod tests {
         let resp = dispatch(&engine, cmd, None).await;
         assert!(resp.is_ok());
 
-        // Create user
+        // Create user (USER sugar)
         let cmd = parse_command(&[
             "USER",
             "CREATE",
@@ -361,7 +467,7 @@ mod tests {
         let resp = dispatch(&engine, cmd, None).await;
         assert!(resp.is_ok());
 
-        // Verify password
+        // Verify password (USER sugar)
         let cmd = parse_command(&["USER", "VERIFY", "myapp", "user1", "correcthorse"]).unwrap();
         let resp = dispatch(&engine, cmd, None).await;
         assert!(resp.is_ok());
@@ -378,6 +484,47 @@ mod tests {
 
         // Health
         let cmd = parse_command(&["HEALTH"]).unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok());
+    }
+
+    #[tokio::test]
+    async fn envelope_flow_via_dispatch() {
+        let engine = setup().await;
+
+        // Register schema
+        let cmd = parse_command(&[
+            "SCHEMA",
+            "REGISTER",
+            "services",
+            r#"{"fields":[{"name":"api_key","field_type":"string","annotations":{"credential":true}},{"name":"endpoint","field_type":"string","annotations":{"index":true}}]}"#,
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok());
+
+        // Create envelope
+        let cmd = parse_command(&[
+            "ENVELOPE",
+            "CREATE",
+            "services",
+            "svc1",
+            r#"{"api_key":"supersecretkey1","endpoint":"https://api.example.com"}"#,
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok());
+
+        // Verify with explicit field
+        let cmd = parse_command(&[
+            "ENVELOPE",
+            "VERIFY",
+            "services",
+            "svc1",
+            "api_key",
+            "supersecretkey1",
+        ])
+        .unwrap();
         let resp = dispatch(&engine, cmd, None).await;
         assert!(resp.is_ok());
     }
