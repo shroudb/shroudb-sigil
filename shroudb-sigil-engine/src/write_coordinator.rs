@@ -1064,6 +1064,260 @@ mod tests {
         );
     }
 
+    /// Mock CipherOps that returns a deterministic ciphertext.
+    struct TestCipherOps;
+
+    impl crate::capabilities::CipherOps for TestCipherOps {
+        fn encrypt(
+            &self,
+            _plaintext: &[u8],
+            _context: Option<&str>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<String, SigilError>> + Send + '_>,
+        > {
+            Box::pin(async { Ok("test-ciphertext".to_string()) })
+        }
+
+        fn decrypt(
+            &self,
+            _ciphertext: &str,
+            _context: Option<&str>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<shroudb_crypto::SensitiveBytes, SigilError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Ok(shroudb_crypto::SensitiveBytes::new(vec![])) })
+        }
+    }
+
+    /// Mock VeilOps that tracks put/delete calls for verification.
+    struct TestVeilOps {
+        entries: Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>,
+    }
+
+    impl TestVeilOps {
+        fn new() -> Self {
+            Self {
+                entries: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            }
+        }
+    }
+
+    impl crate::capabilities::VeilOps for TestVeilOps {
+        fn put(
+            &self,
+            entry_id: &str,
+            plaintext: &[u8],
+            _field: Option<&str>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
+        {
+            let id = entry_id.to_string();
+            let data = plaintext.to_vec();
+            Box::pin(async move {
+                self.entries.lock().unwrap().insert(id, data);
+                Ok(())
+            })
+        }
+
+        fn delete(
+            &self,
+            entry_id: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
+        {
+            let id = entry_id.to_string();
+            Box::pin(async move {
+                self.entries.lock().unwrap().remove(&id);
+                Ok(())
+            })
+        }
+
+        fn search(
+            &self,
+            _query: &str,
+            _field: Option<&str>,
+            _limit: Option<usize>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Vec<(String, f64)>, SigilError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Ok(vec![]) })
+        }
+    }
+
+    #[tokio::test]
+    async fn rollback_veil_entry_on_subsequent_failure() {
+        // Schema: searchable+pii field (Cipher + Veil) → secret field (Keep missing → fails).
+        // Verify: Veil entry is deleted during rollback.
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store.clone());
+        registry.init().await.unwrap();
+
+        let schema = Schema {
+            name: "veil-rollback".to_string(),
+            fields: vec![
+                FieldDef {
+                    name: "email".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        pii: true,
+                        searchable: true,
+                        ..Default::default()
+                    },
+                },
+                FieldDef {
+                    name: "api_key".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        secret: true,
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+        registry.register(schema.clone()).await.unwrap();
+
+        let veil = TestVeilOps::new();
+        let veil_entries = veil.entries.clone();
+        let capabilities = Arc::new(Capabilities {
+            cipher: Some(Box::new(TestCipherOps)),
+            veil: Some(Box::new(veil)),
+            // No keep → will fail on the secret field
+            ..Default::default()
+        });
+
+        let credentials = Arc::new(CredentialManager::new(
+            store.clone(),
+            PasswordPolicy::default(),
+        ));
+        let coord = WriteCoordinator::new(store.clone(), credentials, capabilities);
+
+        let mut fields = HashMap::new();
+        fields.insert("email".into(), serde_json::json!("user@example.com"));
+        fields.insert("api_key".into(), serde_json::json!("sk-secret-12345"));
+
+        // Should fail on secret field (no Keep)
+        let err = coord
+            .create_envelope(&schema, "user1", &fields)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("keep"),
+            "expected keep missing error, got: {err}"
+        );
+
+        // Veil entry should have been rolled back
+        assert!(
+            veil_entries.lock().unwrap().is_empty(),
+            "veil entry should have been deleted during rollback, but entries remain: {:?}",
+            veil_entries.lock().unwrap().keys().collect::<Vec<_>>()
+        );
+
+        // Envelope should not exist
+        assert!(coord.get_envelope(&schema, "user1").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn rollback_all_capabilities_on_failure() {
+        // Schema: credential → searchable+pii (Cipher+Veil) → secret (Keep) → plain pii (no cipher for second encrypt).
+        // Actually: credential → searchable+pii → secret → another pii field (fails: cipher succeeds but this tests full chain).
+        // Simpler: use all three capabilities, then fail on a missing one.
+        //
+        // credential + searchable+pii + secret fields all succeed,
+        // then a plain pii field fails because... we need a FailingCipherOps.
+        //
+        // Let's use: credential → secret (Keep) → searchable+pii (Cipher+Veil).
+        // Provide Keep but NOT Cipher+Veil → fails on searchable+pii → rolls back credential + secret.
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store.clone());
+        registry.init().await.unwrap();
+
+        let schema = Schema {
+            name: "full-rollback".to_string(),
+            fields: vec![
+                FieldDef {
+                    name: "password".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        credential: true,
+                        ..Default::default()
+                    },
+                },
+                FieldDef {
+                    name: "api_key".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        secret: true,
+                        ..Default::default()
+                    },
+                },
+                FieldDef {
+                    name: "email".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        pii: true,
+                        searchable: true,
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+        registry.register(schema.clone()).await.unwrap();
+
+        let keep = TestKeepOps::new();
+        let keep_secrets = keep.secrets.clone();
+        let capabilities = Arc::new(Capabilities {
+            keep: Some(Box::new(keep)),
+            // No cipher, no veil → will fail on searchable+pii field
+            ..Default::default()
+        });
+
+        let credentials = Arc::new(CredentialManager::new(
+            store.clone(),
+            PasswordPolicy::default(),
+        ));
+        let coord = WriteCoordinator::new(store.clone(), credentials, capabilities);
+
+        let mut fields = HashMap::new();
+        fields.insert(
+            "password".into(),
+            serde_json::json!("correct-horse-battery"),
+        );
+        fields.insert("api_key".into(), serde_json::json!("sk-test-key"));
+        fields.insert("email".into(), serde_json::json!("user@test.com"));
+
+        let err = coord
+            .create_envelope(&schema, "user1", &fields)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("cipher"),
+            "expected cipher missing error, got: {err}"
+        );
+
+        // Credential should be rolled back
+        let cred_ns = "sigil.full-rollback.credentials";
+        let cred_key = credential_store_key("user1", "password");
+        assert!(
+            store.get(cred_ns, cred_key.as_bytes(), None).await.is_err(),
+            "credential should have been rolled back"
+        );
+
+        // Secret should be rolled back
+        assert!(
+            keep_secrets.lock().unwrap().is_empty(),
+            "secret should have been deleted during rollback"
+        );
+
+        // Envelope should not exist
+        assert!(coord.get_envelope(&schema, "user1").await.is_err());
+    }
+
     #[tokio::test]
     async fn rollback_on_failure() {
         let (store, coord) = setup().await;
