@@ -37,6 +37,13 @@ pub enum SigilError {
     #[error("token reuse detected — family revoked")]
     TokenReuse,
 
+    #[error("policy denied: {action} on {resource} (policy: {policy})")]
+    PolicyDenied {
+        action: String,
+        resource: String,
+        policy: String,
+    },
+
     #[error("capability not available: {0}")]
     CapabilityMissing(String),
 

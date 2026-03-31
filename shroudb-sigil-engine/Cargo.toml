@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 shroudb-sigil-core.workspace = true
 shroudb-store.workspace = true
+shroudb-acl.workspace = true
 shroudb-cipher-client.workspace = true
 shroudb-crypto.workspace = true
 shroudb-keep-client.workspace = true

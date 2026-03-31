@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use shroudb_acl::{PolicyEffect, PolicyPrincipal, PolicyRequest, PolicyResource};
 use shroudb_sigil_core::error::SigilError;
 use shroudb_sigil_core::record::EnvelopeRecord;
 use shroudb_sigil_core::routing::{FieldTreatment, route_field};
@@ -43,6 +44,42 @@ impl<S: Store> WriteCoordinator<S> {
             credentials,
             capabilities,
         }
+    }
+
+    async fn check_policy(
+        &self,
+        entity_id: &str,
+        schema_name: &str,
+        action: &str,
+    ) -> Result<(), SigilError> {
+        let Some(sentry) = &self.capabilities.sentry else {
+            return Ok(());
+        };
+        let request = PolicyRequest {
+            principal: PolicyPrincipal {
+                id: entity_id.to_string(),
+                roles: vec![],
+                claims: Default::default(),
+            },
+            resource: PolicyResource {
+                id: schema_name.to_string(),
+                resource_type: "schema".to_string(),
+                attributes: Default::default(),
+            },
+            action: action.to_string(),
+        };
+        let decision = sentry
+            .evaluate(&request)
+            .await
+            .map_err(|e| SigilError::Internal(format!("policy evaluation failed: {e}")))?;
+        if decision.effect == PolicyEffect::Deny {
+            return Err(SigilError::PolicyDenied {
+                action: action.to_string(),
+                resource: schema_name.to_string(),
+                policy: decision.matched_policy.unwrap_or_default(),
+            });
+        }
+        Ok(())
     }
 
     /// Create an envelope by routing each field to the appropriate handler.
@@ -96,6 +133,8 @@ impl<S: Store> WriteCoordinator<S> {
         {
             return Err(SigilError::EntityExists);
         }
+
+        self.check_policy(entity_id, &schema.name, "create").await?;
 
         let mut completed_ops: Vec<CompensatingOp> = Vec::new();
         let mut record_fields: HashMap<String, serde_json::Value> = HashMap::new();
@@ -262,6 +301,8 @@ impl<S: Store> WriteCoordinator<S> {
             }
         }
 
+        self.check_policy(entity_id, &schema.name, "update").await?;
+
         // Process fields with rollback tracking (same pattern as create)
         let mut completed_ops: Vec<CompensatingOp> = Vec::new();
 
@@ -366,6 +407,8 @@ impl<S: Store> WriteCoordinator<S> {
         schema: &Schema,
         entity_id: &str,
     ) -> Result<(), SigilError> {
+        self.check_policy(entity_id, &schema.name, "delete").await?;
+
         let schema_name = &schema.name;
         let envelopes_ns = envelopes_namespace(schema_name);
         let creds_ns = format!("sigil.{schema_name}.credentials");

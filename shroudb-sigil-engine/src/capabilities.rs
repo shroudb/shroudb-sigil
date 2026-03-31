@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use shroudb_acl::PolicyEvaluator;
 use shroudb_sigil_core::error::SigilError;
 
 /// Shorthand for a pinned boxed future.
@@ -31,15 +34,6 @@ pub trait KeepOps: Send + Sync {
     fn get_secret(&self, path: &str) -> BoxFut<'_, Vec<u8>>;
 }
 
-/// Trait for Sentry operations (post-verify authorization enrichment).
-pub trait SentryOps: Send + Sync {
-    fn evaluate(
-        &self,
-        entity_id: &str,
-        context: &serde_json::Value,
-    ) -> BoxFut<'_, serde_json::Value>;
-}
-
 /// Engine capabilities provided at construction time.
 ///
 /// In standalone mode: built from config (remote endpoints or absent).
@@ -49,5 +43,5 @@ pub struct Capabilities {
     pub cipher: Option<Box<dyn CipherOps>>,
     pub veil: Option<Box<dyn VeilOps>>,
     pub keep: Option<Box<dyn KeepOps>>,
-    pub sentry: Option<Box<dyn SentryOps>>,
+    pub sentry: Option<Arc<dyn PolicyEvaluator>>,
 }
