@@ -1818,4 +1818,211 @@ mod tests {
             "concurrent creates appear serialized: {elapsed:?} for 5 creates with 50ms Keep"
         );
     }
+
+    // ── Rollback orphan tests ──────────────────────────────────────
+
+    /// KeepOps where store_secret succeeds but delete_secret fails,
+    /// simulating a compensating operation failure during rollback.
+    struct FailingDeleteKeepOps {
+        secrets: Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>,
+    }
+
+    impl FailingDeleteKeepOps {
+        fn new() -> Self {
+            Self {
+                secrets: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            }
+        }
+    }
+
+    impl crate::capabilities::KeepOps for FailingDeleteKeepOps {
+        fn store_secret(
+            &self,
+            path: &str,
+            value: &[u8],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, SigilError>> + Send + '_>>
+        {
+            let path = path.to_string();
+            let value = value.to_vec();
+            Box::pin(async move {
+                self.secrets.lock().unwrap().insert(path, value);
+                Ok(1)
+            })
+        }
+
+        fn delete_secret(
+            &self,
+            _path: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
+        {
+            Box::pin(async { Err(SigilError::Internal("keep delete unreachable".into())) })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rollback_orphan_surfaced_in_error() {
+        // Schema: secret field (Keep) + PII field (no cipher → fails).
+        // Secret stores successfully → PII fails → rollback tries to delete
+        // secret → delete_secret fails → error message must contain
+        // "rollback orphans" and the Keep path.
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store.clone());
+        registry.init().await.unwrap();
+
+        let schema = Schema {
+            name: "orphan-test".to_string(),
+            fields: vec![
+                FieldDef {
+                    name: "api_key".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        secret: true,
+                        ..Default::default()
+                    },
+                },
+                FieldDef {
+                    name: "email".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        pii: true,
+                        ..Default::default()
+                    },
+                },
+            ],
+        };
+        registry.register(schema.clone()).await.unwrap();
+
+        let keep = FailingDeleteKeepOps::new();
+        let keep_secrets = keep.secrets.clone();
+        let capabilities = Arc::new(Capabilities {
+            keep: Some(Box::new(keep)),
+            // No cipher → will fail on PII field, triggering rollback
+            ..Default::default()
+        });
+
+        let credentials = Arc::new(CredentialManager::new(
+            store.clone(),
+            PasswordPolicy::default(),
+        ));
+        let coord = WriteCoordinator::new(store.clone(), credentials, capabilities);
+
+        let mut fields = HashMap::new();
+        fields.insert("api_key".into(), serde_json::json!("sk-secret-key-12345"));
+        fields.insert("email".into(), serde_json::json!("user@example.com"));
+
+        let err = coord
+            .create_envelope(&schema, "user1", &fields)
+            .await
+            .unwrap_err();
+        let err_msg = err.to_string();
+
+        // Error must surface the rollback orphan
+        assert!(
+            err_msg.contains("rollback orphans"),
+            "expected 'rollback orphans' in error, got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("keep:orphan-test/user1/api_key"),
+            "expected Keep path in orphan list, got: {err_msg}"
+        );
+
+        // The secret is still in Keep (delete failed — it's orphaned)
+        assert!(
+            !keep_secrets.lock().unwrap().is_empty(),
+            "secret should remain in Keep since delete_secret failed"
+        );
+
+        // Envelope should not exist
+        assert!(coord.get_envelope(&schema, "user1").await.is_err());
+    }
+
+    // ── Concurrent duplicate entity_id tests ───────────────────────
+
+    #[tokio::test]
+    async fn test_concurrent_create_same_entity_rejects_duplicate() {
+        // Seed an entity, then spawn 5 concurrent tasks trying to create
+        // the same entity_id. All 5 must fail with EntityExists since the
+        // entity already exists.
+        //
+        // Note: EmbeddedStore does not provide compare-and-set, so truly
+        // simultaneous creates from a cold start could race through the
+        // existence check (TOCTOU). This test validates the duplicate-
+        // detection path by pre-seeding the entity, ensuring all concurrent
+        // attempts see the existing record.
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store.clone());
+        registry.init().await.unwrap();
+
+        let schema = Schema {
+            name: "dup-race".to_string(),
+            fields: vec![
+                FieldDef {
+                    name: "org_id".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations {
+                        index: true,
+                        ..Default::default()
+                    },
+                },
+                FieldDef {
+                    name: "name".to_string(),
+                    field_type: FieldType::String,
+                    annotations: FieldAnnotations::default(),
+                },
+            ],
+        };
+        registry.register(schema.clone()).await.unwrap();
+
+        let capabilities = Arc::new(Capabilities::default());
+        let credentials = Arc::new(CredentialManager::new(
+            store.clone(),
+            PasswordPolicy::default(),
+        ));
+        let coord = Arc::new(WriteCoordinator::new(
+            store.clone(),
+            credentials,
+            capabilities,
+        ));
+
+        // Seed the entity so it exists before any concurrent tasks run
+        let mut seed_fields = HashMap::new();
+        seed_fields.insert("org_id".into(), serde_json::json!("org-seed"));
+        seed_fields.insert("name".into(), serde_json::json!("Seed"));
+        coord
+            .create_envelope(&schema, "same-entity", &seed_fields)
+            .await
+            .unwrap();
+
+        // Fire 5 concurrent creates for the same entity_id — all must fail
+        let mut handles = Vec::new();
+        for i in 0..5 {
+            let c = coord.clone();
+            let s = schema.clone();
+            handles.push(tokio::spawn(async move {
+                let mut fields = HashMap::new();
+                fields.insert("org_id".into(), serde_json::json!(format!("org-{i}")));
+                fields.insert("name".into(), serde_json::json!(format!("Task-{i}")));
+                c.create_envelope(&s, "same-entity", &fields).await
+            }));
+        }
+
+        let mut entity_exists_errors = 0u32;
+        for h in handles {
+            match h.await.unwrap() {
+                Ok(_) => panic!("create should not succeed for an existing entity"),
+                Err(SigilError::EntityExists) => entity_exists_errors += 1,
+                Err(e) => panic!("unexpected error: {e}"),
+            }
+        }
+
+        assert_eq!(
+            entity_exists_errors, 5,
+            "all 5 concurrent creates should fail with EntityExists, got {entity_exists_errors}"
+        );
+
+        // Original envelope is intact and unmodified
+        let record = coord.get_envelope(&schema, "same-entity").await.unwrap();
+        assert_eq!(record.entity_id, "same-entity");
+        assert_eq!(record.fields["org_id"], "org-seed");
+    }
 }
