@@ -178,6 +178,23 @@ impl SigilClient {
         check_status(&resp)
     }
 
+    /// Look up a user by an indexed field value.
+    pub async fn user_lookup(
+        &mut self,
+        schema: &str,
+        field: &str,
+        value: &str,
+    ) -> Result<String, ClientError> {
+        let resp = self
+            .command(&["USER", "LOOKUP", schema, field, value])
+            .await?;
+        check_status(&resp)?;
+        resp["entity_id"]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| ClientError::ResponseFormat("missing entity_id".into()))
+    }
+
     /// Verify a user's credentials.
     pub async fn user_verify(
         &mut self,
@@ -211,6 +228,21 @@ impl SigilClient {
             args.push(&meta_str);
         }
         let resp = self.command(&args).await?;
+        check_status(&resp)?;
+        parse_token_pair(&resp)
+    }
+
+    /// Login by indexed field: look up entity by field value, verify credentials, issue tokens.
+    pub async fn session_create_by_field(
+        &mut self,
+        schema: &str,
+        field: &str,
+        value: &str,
+        password: &str,
+    ) -> Result<TokenPair, ClientError> {
+        let resp = self
+            .command(&["SESSION", "LOGIN", schema, field, value, password])
+            .await?;
         check_status(&resp)?;
         parse_token_pair(&resp)
     }
@@ -264,6 +296,112 @@ impl SigilClient {
         self.command(&["SESSION", "LIST", schema, user_id]).await
     }
 
+    // ── Envelope ────────────────────────────────────────────────────
+
+    /// Create an envelope record.
+    pub async fn envelope_create(
+        &mut self,
+        schema: &str,
+        entity_id: &str,
+        fields: &serde_json::Value,
+    ) -> Result<EnvelopeRecord, ClientError> {
+        let json =
+            serde_json::to_string(fields).map_err(|e| ClientError::Serialization(e.to_string()))?;
+        let resp = self
+            .command(&["ENVELOPE", "CREATE", schema, entity_id, &json])
+            .await?;
+        check_status(&resp)?;
+        parse_envelope_record(&resp)
+    }
+
+    /// Get an envelope record.
+    pub async fn envelope_get(
+        &mut self,
+        schema: &str,
+        entity_id: &str,
+    ) -> Result<EnvelopeRecord, ClientError> {
+        let resp = self
+            .command(&["ENVELOPE", "GET", schema, entity_id])
+            .await?;
+        parse_envelope_record(&resp)
+    }
+
+    /// Delete an envelope record.
+    pub async fn envelope_delete(
+        &mut self,
+        schema: &str,
+        entity_id: &str,
+    ) -> Result<(), ClientError> {
+        let resp = self
+            .command(&["ENVELOPE", "DELETE", schema, entity_id])
+            .await?;
+        check_status(&resp)
+    }
+
+    /// Import an envelope record with pre-hashed credential fields.
+    pub async fn envelope_import(
+        &mut self,
+        schema: &str,
+        entity_id: &str,
+        fields: &serde_json::Value,
+    ) -> Result<EnvelopeRecord, ClientError> {
+        let json =
+            serde_json::to_string(fields).map_err(|e| ClientError::Serialization(e.to_string()))?;
+        let resp = self
+            .command(&["ENVELOPE", "IMPORT", schema, entity_id, &json])
+            .await?;
+        check_status(&resp)?;
+        parse_envelope_record(&resp)
+    }
+
+    /// Update non-credential fields on an envelope record.
+    pub async fn envelope_update(
+        &mut self,
+        schema: &str,
+        entity_id: &str,
+        fields: &serde_json::Value,
+    ) -> Result<EnvelopeRecord, ClientError> {
+        let json =
+            serde_json::to_string(fields).map_err(|e| ClientError::Serialization(e.to_string()))?;
+        let resp = self
+            .command(&["ENVELOPE", "UPDATE", schema, entity_id, &json])
+            .await?;
+        check_status(&resp)?;
+        parse_envelope_record(&resp)
+    }
+
+    /// Verify a credential field on an envelope record.
+    pub async fn envelope_verify(
+        &mut self,
+        schema: &str,
+        entity_id: &str,
+        field: &str,
+        value: &str,
+    ) -> Result<bool, ClientError> {
+        let resp = self
+            .command(&["ENVELOPE", "VERIFY", schema, entity_id, field, value])
+            .await?;
+        check_status(&resp)?;
+        Ok(resp["valid"].as_bool().unwrap_or(false))
+    }
+
+    /// Look up an entity by an indexed field value.
+    pub async fn envelope_lookup(
+        &mut self,
+        schema: &str,
+        field: &str,
+        value: &str,
+    ) -> Result<String, ClientError> {
+        let resp = self
+            .command(&["ENVELOPE", "LOOKUP", schema, field, value])
+            .await?;
+        check_status(&resp)?;
+        resp["entity_id"]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| ClientError::ResponseFormat("missing entity_id".into()))
+    }
+
     // ── Password ────────────────────────────────────────────────────
 
     /// Change password (requires old password).
@@ -309,6 +447,63 @@ impl SigilClient {
     ) -> Result<String, ClientError> {
         let resp = self
             .command(&["PASSWORD", "IMPORT", schema, user_id, hash])
+            .await?;
+        check_status(&resp)?;
+        resp["algorithm"]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| ClientError::ResponseFormat("missing algorithm".into()))
+    }
+
+    // ── Credential ──────────────────────────────────────────────────
+
+    /// Change a credential field (requires old value for verification).
+    pub async fn credential_change(
+        &mut self,
+        schema: &str,
+        entity_id: &str,
+        field: &str,
+        old_value: &str,
+        new_value: &str,
+    ) -> Result<(), ClientError> {
+        let resp = self
+            .command(&[
+                "CREDENTIAL",
+                "CHANGE",
+                schema,
+                entity_id,
+                field,
+                old_value,
+                new_value,
+            ])
+            .await?;
+        check_status(&resp)
+    }
+
+    /// Reset a credential field (admin/forced, no old value required).
+    pub async fn credential_reset(
+        &mut self,
+        schema: &str,
+        entity_id: &str,
+        field: &str,
+        new_value: &str,
+    ) -> Result<(), ClientError> {
+        let resp = self
+            .command(&["CREDENTIAL", "RESET", schema, entity_id, field, new_value])
+            .await?;
+        check_status(&resp)
+    }
+
+    /// Import a pre-hashed credential field value.
+    pub async fn credential_import(
+        &mut self,
+        schema: &str,
+        entity_id: &str,
+        field: &str,
+        hash: &str,
+    ) -> Result<String, ClientError> {
+        let resp = self
+            .command(&["CREDENTIAL", "IMPORT", schema, entity_id, field, hash])
             .await?;
         check_status(&resp)?;
         resp["algorithm"]
