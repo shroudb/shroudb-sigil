@@ -459,10 +459,12 @@ impl<S: Store> WriteCoordinator<S> {
     /// Delete an envelope and all associated data (credentials, sessions,
     /// blind index entries).
     ///
-    /// Deletion order: associated data first (credentials, blind indexes,
-    /// sessions), then the envelope record last. The envelope record is the
-    /// commit point — if any pre-deletion fails, the envelope remains intact
-    /// and the error is propagated.
+    /// Deletion order: audit event → envelope record (commit point) →
+    /// best-effort cleanup of associated data. This ordering ensures that
+    /// if audit or envelope delete fails, no associated data has been
+    /// touched — the operation is fully abortable up to the commit point.
+    /// Cleanup failures after commit are logged and handled by the
+    /// scheduled `reconcile_orphans()` task.
     pub async fn delete_envelope(
         &self,
         schema: &Schema,
@@ -472,42 +474,85 @@ impl<S: Store> WriteCoordinator<S> {
 
         let schema_name = &schema.name;
         let envelopes_ns = envelopes_namespace(schema_name);
-        let creds_ns = format!("sigil.{schema_name}.credentials");
-        let sessions_ns = format!("sigil.{schema_name}.sessions");
 
-        // Verify envelope exists before deleting associated data
+        // Verify envelope exists before proceeding
         self.store
             .get(&envelopes_ns, entity_id.as_bytes(), None)
             .await
             .map_err(|_| SigilError::EntityNotFound)?;
 
-        // Phase 1: Delete associated data (before envelope commit point).
-        // Track successful deletions so we can surface orphans if Phase 2 fails.
-        let mut completed_deletions: Vec<String> = Vec::new();
+        // Audit event before commit — fail closed if Chronicle is unreachable.
+        // No data has been modified yet, so failure is a clean abort.
+        self.emit_audit_event(
+            "delete",
+            &format!("{}/{}", schema_name, entity_id),
+            entity_id,
+        )
+        .await?;
 
-        // Delete credential records
+        // Delete envelope record — the commit point.
+        // If this fails, nothing has been deleted; a retry is safe.
+        self.store
+            .delete(&envelopes_ns, entity_id.as_bytes())
+            .await
+            .map_err(|e| SigilError::Store(e.to_string()))?;
+
+        // Post-commit cleanup: best-effort deletion of associated data.
+        // The envelope is already gone, so this data is unreachable.
+        // Failures are logged for reconcile_orphans() to handle.
+        self.cleanup_associated_data(schema, entity_id).await;
+
+        Ok(())
+    }
+
+    /// Best-effort cleanup of data associated with a deleted envelope.
+    /// Called after the envelope record has been deleted (commit point).
+    /// Failures are logged but do not affect the delete result.
+    async fn cleanup_associated_data(&self, schema: &Schema, entity_id: &str) {
+        let schema_name = &schema.name;
+        let creds_ns = format!("sigil.{schema_name}.credentials");
+        let sessions_ns = format!("sigil.{schema_name}.sessions");
+
         for field_def in &schema.fields {
             let treatment = route_field(&field_def.annotations);
             match treatment {
                 FieldTreatment::Credential => {
                     let key = credential_store_key(entity_id, &field_def.name);
-                    if self.store.delete(&creds_ns, key.as_bytes()).await.is_ok() {
-                        completed_deletions.push(format!("credential:{creds_ns}/{key}"));
+                    if let Err(e) = self.store.delete(&creds_ns, key.as_bytes()).await {
+                        tracing::warn!(
+                            schema = schema_name,
+                            entity_id,
+                            field = field_def.name,
+                            error = %e,
+                            "post-commit credential cleanup failed — reconcile_orphans will handle"
+                        );
                     }
                 }
                 FieldTreatment::SearchableEncrypted => {
                     if let Some(veil) = &self.capabilities.veil {
                         let entry_id = format!("{entity_id}/{}", field_def.name);
-                        if veil.delete(&entry_id).await.is_ok() {
-                            completed_deletions.push(format!("blind_index:{entry_id}"));
+                        if let Err(e) = veil.delete(&entry_id).await {
+                            tracing::warn!(
+                                schema = schema_name,
+                                entity_id,
+                                field = field_def.name,
+                                error = %e,
+                                "post-commit blind index cleanup failed — reconcile_orphans will handle"
+                            );
                         }
                     }
                 }
                 FieldTreatment::VersionedSecret => {
                     if let Some(keep) = &self.capabilities.keep {
                         let path = format!("{schema_name}/{entity_id}/{}", field_def.name);
-                        if keep.delete_secret(&path).await.is_ok() {
-                            completed_deletions.push(format!("secret:{path}"));
+                        if let Err(e) = keep.delete_secret(&path).await {
+                            tracing::warn!(
+                                schema = schema_name,
+                                entity_id,
+                                field = field_def.name,
+                                error = %e,
+                                "post-commit secret cleanup failed — reconcile_orphans will handle"
+                            );
                         }
                     }
                 }
@@ -517,7 +562,6 @@ impl<S: Store> WriteCoordinator<S> {
 
         // Delete all sessions for this entity
         if let Ok(page) = self.store.list(&sessions_ns, None, None, 10_000).await {
-            // Collect matching session keys first, then delete all
             let mut session_keys = Vec::new();
             for key in &page.keys {
                 if let Ok(entry) = self.store.get(&sessions_ns, key, None).await
@@ -530,66 +574,18 @@ impl<S: Store> WriteCoordinator<S> {
                 }
             }
             for key in &session_keys {
-                if self.store.delete(&sessions_ns, key).await.is_ok() {
+                if let Err(e) = self.store.delete(&sessions_ns, key).await {
                     let key_str = String::from_utf8_lossy(key);
-                    completed_deletions.push(format!("session:{sessions_ns}/{key_str}"));
+                    tracing::warn!(
+                        schema = schema_name,
+                        entity_id,
+                        session_key = %key_str,
+                        error = %e,
+                        "post-commit session cleanup failed — reconcile_orphans will handle"
+                    );
                 }
             }
         }
-
-        // Audit event before commit — fail closed if Chronicle is unreachable.
-        // If this fails, surface the orphaned Phase 1 deletions.
-        if let Err(e) = self
-            .emit_audit_event(
-                "delete",
-                &format!("{}/{}", schema_name, entity_id),
-                entity_id,
-            )
-            .await
-        {
-            if !completed_deletions.is_empty() {
-                tracing::error!(
-                    schema = schema_name,
-                    entity_id,
-                    orphans = ?completed_deletions,
-                    "audit event failed after Phase 1 deletions — orphaned data requires reconciliation"
-                );
-                return Err(SigilError::Internal(format!(
-                    "audit event failed: {e}; orphaned deletions: [{}]",
-                    completed_deletions.join(", ")
-                )));
-            }
-            return Err(e);
-        }
-
-        // Phase 2: Delete envelope record (commit point).
-        // If this fails, associated data (credentials, blind indexes, secrets,
-        // sessions) may already be partially deleted. The envelope still exists
-        // so a retry will succeed. Surface orphaned deletions for reconciliation.
-        if let Err(e) = self.store.delete(&envelopes_ns, entity_id.as_bytes()).await {
-            if !completed_deletions.is_empty() {
-                tracing::error!(
-                    schema = schema_name,
-                    entity_id,
-                    orphans = ?completed_deletions,
-                    error = %e,
-                    "envelope delete failed after Phase 1 cleanup — orphaned data requires reconciliation"
-                );
-                return Err(SigilError::Store(format!(
-                    "envelope delete failed: {e}; orphaned deletions: [{}]",
-                    completed_deletions.join(", ")
-                )));
-            }
-            tracing::error!(
-                schema = schema_name,
-                entity_id,
-                error = %e,
-                "envelope delete failed — no Phase 1 data was deleted"
-            );
-            return Err(SigilError::Store(e.to_string()));
-        }
-
-        Ok(())
     }
 
     async fn process_field(
@@ -1010,10 +1006,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_surfaces_orphans_when_commit_fails() {
-        // Create an envelope with a credential field, then make the audit
-        // event fail so Phase 2 never completes. The error message must
-        // contain descriptions of the Phase 1 deletions (orphans).
+    async fn delete_no_cleanup_before_audit() {
+        // When audit fails during delete, NO associated data should be
+        // deleted. Audit and envelope delete happen before cleanup.
         let store = create_test_store().await;
         let registry = SchemaRegistry::new(store.clone());
         registry.init().await.unwrap();
@@ -1038,29 +1033,93 @@ mod tests {
             chronicle: Some(Arc::new(FailingChronicle)),
             ..Default::default()
         });
-        let coord_delete = WriteCoordinator::new(store.clone(), credentials, capabilities_delete);
+        let coord_delete =
+            WriteCoordinator::new(store.clone(), credentials.clone(), capabilities_delete);
 
         let err = coord_delete
             .delete_envelope(&test_schema(), "user1")
             .await
             .unwrap_err();
         let err_msg = err.to_string();
-
-        // The error should mention orphaned deletions with credential info.
         assert!(
-            err_msg.contains("orphaned deletions"),
-            "error should surface orphaned deletions, got: {err_msg}"
-        );
-        assert!(
-            err_msg.contains("credential:"),
-            "error should describe the deleted credential, got: {err_msg}"
+            err_msg.contains("audit"),
+            "expected audit failure error, got: {err_msg}"
         );
 
-        // The envelope should still exist (Phase 2 was never reached).
+        // Envelope should still exist — audit failed before commit.
         let envelope = coord_delete.get_envelope(&test_schema(), "user1").await;
         assert!(
             envelope.is_ok(),
-            "envelope should still exist after failed commit"
+            "envelope should still exist after audit failure"
+        );
+
+        // Credential should still exist — no cleanup happened before audit.
+        let cred_ns = "sigil.myapp.credentials";
+        let cred_key = credential_store_key("user1", "password");
+        assert!(
+            store.get(cred_ns, cred_key.as_bytes(), None).await.is_ok(),
+            "credential should still exist — cleanup must not happen before audit"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_cleanup_after_commit_is_best_effort() {
+        // When envelope delete succeeds but Veil cleanup fails after,
+        // the delete should still succeed (cleanup is best-effort after commit).
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store.clone());
+        registry.init().await.unwrap();
+
+        let schema = Schema {
+            name: "del-cleanup".to_string(),
+            fields: vec![FieldDef {
+                name: "email".to_string(),
+                field_type: FieldType::String,
+                annotations: FieldAnnotations {
+                    pii: true,
+                    searchable: true,
+                    ..Default::default()
+                },
+            }],
+        };
+        registry.register(schema.clone()).await.unwrap();
+
+        // Create with working capabilities
+        let credentials = Arc::new(CredentialManager::new(
+            store.clone(),
+            PasswordPolicy::default(),
+        ));
+        let working_caps = Arc::new(Capabilities {
+            cipher: Some(Box::new(TestCipherOps)),
+            veil: Some(Box::new(TestVeilOps::new())),
+            ..Default::default()
+        });
+        let coord = WriteCoordinator::new(store.clone(), credentials.clone(), working_caps);
+
+        let mut fields = HashMap::new();
+        fields.insert("email".into(), serde_json::json!("user@test.com"));
+        coord
+            .create_envelope(&schema, "user1", &fields)
+            .await
+            .unwrap();
+
+        // Delete with failing Veil — should succeed (cleanup after commit is best-effort)
+        let failing_caps = Arc::new(Capabilities {
+            cipher: Some(Box::new(TestCipherOps)),
+            veil: Some(Box::new(FailingVeilDeleteOps)),
+            ..Default::default()
+        });
+        let coord_del = WriteCoordinator::new(store.clone(), credentials, failing_caps);
+
+        coord_del
+            .delete_envelope(&schema, "user1")
+            .await
+            .expect("delete should succeed — cleanup failures after commit are best-effort");
+
+        // Envelope should be gone
+        assert!(
+            coord_del.get_envelope(&schema, "user1").await.is_err(),
+            "envelope should be deleted"
         );
     }
 
@@ -1754,66 +1813,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn delete_succeeds_despite_veil_cleanup_failure() {
-        // Delete is best-effort for associated data cleanup. If Veil blind
-        // index cleanup fails, the envelope is still deleted (logged at WARN).
-        let store = create_test_store().await;
-        let registry = SchemaRegistry::new(store.clone());
-        registry.init().await.unwrap();
-
-        let schema = Schema {
-            name: "del-veil-fail".to_string(),
-            fields: vec![FieldDef {
-                name: "email".to_string(),
-                field_type: FieldType::String,
-                annotations: FieldAnnotations {
-                    pii: true,
-                    searchable: true,
-                    ..Default::default()
-                },
-            }],
-        };
-        registry.register(schema.clone()).await.unwrap();
-
-        // Create with working capabilities
-        let credentials = Arc::new(CredentialManager::new(
-            store.clone(),
-            PasswordPolicy::default(),
-        ));
-        let working_caps = Arc::new(Capabilities {
-            cipher: Some(Box::new(TestCipherOps)),
-            veil: Some(Box::new(TestVeilOps::new())),
-            ..Default::default()
-        });
-        let coord = WriteCoordinator::new(store.clone(), credentials.clone(), working_caps);
-
-        let mut fields = HashMap::new();
-        fields.insert("email".into(), serde_json::json!("user@test.com"));
-        coord
-            .create_envelope(&schema, "user1", &fields)
-            .await
-            .unwrap();
-
-        // Delete with failing Veil — should succeed anyway (best-effort cleanup)
-        let failing_caps = Arc::new(Capabilities {
-            cipher: Some(Box::new(TestCipherOps)),
-            veil: Some(Box::new(FailingVeilDeleteOps)),
-            ..Default::default()
-        });
-        let coord_del = WriteCoordinator::new(store.clone(), credentials, failing_caps);
-
-        coord_del
-            .delete_envelope(&schema, "user1")
-            .await
-            .expect("delete should succeed despite Veil cleanup failure");
-
-        // Envelope should be gone — delete completed
-        assert!(
-            coord_del.get_envelope(&schema, "user1").await.is_err(),
-            "envelope should be deleted"
-        );
-    }
+    // delete_succeeds_despite_veil_cleanup_failure is covered by
+    // delete_cleanup_after_commit_is_best_effort above.
 
     // ── Concurrency tests ───────────────────────────────────────
 
