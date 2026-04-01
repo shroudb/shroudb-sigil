@@ -2163,6 +2163,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "shroudb-server-tcp"
+version = "0.1.0"
+source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
+checksum = "595bfdc92325ca901e5af7ef05f92510a4793b26149791da395abcf6441f3bb5"
+dependencies = [
+ "serde_json",
+ "shroudb-acl",
+ "shroudb-protocol-wire",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "shroudb-sigil-cli"
 version = "1.4.5"
 dependencies = [
@@ -2253,6 +2266,7 @@ dependencies = [
  "shroudb-crypto",
  "shroudb-keep-client",
  "shroudb-protocol-wire",
+ "shroudb-server-tcp",
  "shroudb-sigil-core",
  "shroudb-sigil-engine",
  "shroudb-sigil-protocol",
