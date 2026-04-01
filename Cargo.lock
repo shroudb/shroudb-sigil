@@ -2087,9 +2087,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-chronicle-core"
-version = "1.2.7"
+version = "1.2.8"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "fe7d48fb2340af779aa1dcfc64f15db8de863c8b1c3ec6cf3431006ad819832d"
+checksum = "6c62f139eb238950ad62f88e95f95ccec2dbe8fdf0a9a70a3d28e7cd3a207691"
 dependencies = [
  "serde",
  "serde_json",
@@ -2099,9 +2099,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-cipher-client"
-version = "1.4.4"
+version = "1.4.5"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "c62c166f0571936297bd74ccd250cb79ea5a91185b03aaeaf4c26a17798d32c0"
+checksum = "9208a6bf57556bac0397e9e1486a76460761517758b4dcdfc62e51bc09f20987"
 dependencies = [
  "serde",
  "serde_json",
@@ -2146,9 +2146,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-keep-client"
-version = "1.4.5"
+version = "1.4.6"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "af43ed9c6931e307c545f2556eaba6deedfc23cf4e54e8362d1e55b575568e21"
+checksum = "5ac22af90ed8485370e3f5b908fb9473e106dd7bc55d30a5ecfeae71ad6d6e5a"
 dependencies = [
  "serde",
  "serde_json",
@@ -2181,7 +2181,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-cli"
-version = "1.4.6"
+version = "1.4.7"
 dependencies = [
  "anyhow",
  "clap",
@@ -2192,7 +2192,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-client"
-version = "1.4.6"
+version = "1.4.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -2202,7 +2202,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-core"
-version = "1.4.6"
+version = "1.4.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -2211,7 +2211,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-engine"
-version = "1.4.6"
+version = "1.4.7"
 dependencies = [
  "argon2",
  "base64",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-protocol"
-version = "1.4.6"
+version = "1.4.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -2255,7 +2255,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-server"
-version = "1.4.6"
+version = "1.4.7"
 dependencies = [
  "anyhow",
  "axum",
@@ -2288,9 +2288,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-storage"
-version = "0.2.13"
+version = "0.2.14"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "4c82f51793de297293a6aa0f47426deae30d12f9e804920e0adc125722be53a1"
+checksum = "c77c1552528c8370bfcef78130bbdd3fbd29d94fb329daff4948c0043e46c16c"
 dependencies = [
  "crc32fast",
  "dashmap",
@@ -2325,9 +2325,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-veil-client"
-version = "1.2.9"
+version = "1.2.10"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "ac40eefa1a06e2a4aa98d53d13acb41413458f31dca828e3b8209a59212c991a"
+checksum = "3a921f2bdfe94789dee636f46d24619845dfe8c3223aa86b97bf7f20850322e9"
 dependencies = [
  "serde",
  "serde_json",
