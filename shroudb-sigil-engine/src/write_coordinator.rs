@@ -481,7 +481,9 @@ impl<S: Store> WriteCoordinator<S> {
             .await
             .map_err(|_| SigilError::EntityNotFound)?;
 
-        // Phase 1: Delete associated data (before envelope commit point)
+        // Phase 1: Delete associated data (before envelope commit point).
+        // Track successful deletions so we can surface orphans if Phase 2 fails.
+        let mut completed_deletions: Vec<String> = Vec::new();
 
         // Delete credential records
         for field_def in &schema.fields {
@@ -489,35 +491,23 @@ impl<S: Store> WriteCoordinator<S> {
             match treatment {
                 FieldTreatment::Credential => {
                     let key = credential_store_key(entity_id, &field_def.name);
-                    if let Err(e) = self.store.delete(&creds_ns, key.as_bytes()).await {
-                        tracing::debug!(
-                            key = %key,
-                            error = %e,
-                            "credential not found during delete (may not have been populated)"
-                        );
+                    if self.store.delete(&creds_ns, key.as_bytes()).await.is_ok() {
+                        completed_deletions.push(format!("credential:{creds_ns}/{key}"));
                     }
                 }
                 FieldTreatment::SearchableEncrypted => {
                     if let Some(veil) = &self.capabilities.veil {
                         let entry_id = format!("{entity_id}/{}", field_def.name);
-                        if let Err(e) = veil.delete(&entry_id).await {
-                            tracing::warn!(
-                                entry_id = %entry_id,
-                                error = %e,
-                                "blind index entry not cleaned up during delete"
-                            );
+                        if veil.delete(&entry_id).await.is_ok() {
+                            completed_deletions.push(format!("blind_index:{entry_id}"));
                         }
                     }
                 }
                 FieldTreatment::VersionedSecret => {
                     if let Some(keep) = &self.capabilities.keep {
                         let path = format!("{schema_name}/{entity_id}/{}", field_def.name);
-                        if let Err(e) = keep.delete_secret(&path).await {
-                            tracing::debug!(
-                                path = %path,
-                                error = %e,
-                                "secret not found during delete"
-                            );
+                        if keep.delete_secret(&path).await.is_ok() {
+                            completed_deletions.push(format!("secret:{path}"));
                         }
                     }
                 }
@@ -540,33 +530,61 @@ impl<S: Store> WriteCoordinator<S> {
                 }
             }
             for key in &session_keys {
-                if let Err(e) = self.store.delete(&sessions_ns, key).await {
-                    tracing::warn!(
-                        error = %e,
-                        "session not cleaned up during delete"
-                    );
+                if self.store.delete(&sessions_ns, key).await.is_ok() {
+                    let key_str = String::from_utf8_lossy(key);
+                    completed_deletions.push(format!("session:{sessions_ns}/{key_str}"));
                 }
             }
         }
 
-        // Audit event before commit — fail closed if Chronicle is unreachable
-        self.emit_audit_event(
-            "delete",
-            &format!("{}/{}", schema_name, entity_id),
-            entity_id,
-        )
-        .await?;
+        // Audit event before commit — fail closed if Chronicle is unreachable.
+        // If this fails, surface the orphaned Phase 1 deletions.
+        if let Err(e) = self
+            .emit_audit_event(
+                "delete",
+                &format!("{}/{}", schema_name, entity_id),
+                entity_id,
+            )
+            .await
+        {
+            if !completed_deletions.is_empty() {
+                tracing::error!(
+                    schema = schema_name,
+                    entity_id,
+                    orphans = ?completed_deletions,
+                    "audit event failed after Phase 1 deletions — orphaned data requires reconciliation"
+                );
+                return Err(SigilError::Internal(format!(
+                    "audit event failed: {e}; orphaned deletions: [{}]",
+                    completed_deletions.join(", ")
+                )));
+            }
+            return Err(e);
+        }
 
-        // Phase 2: Delete envelope record (commit point)
+        // Phase 2: Delete envelope record (commit point).
         // If this fails, associated data (credentials, blind indexes, secrets,
         // sessions) may already be partially deleted. The envelope still exists
-        // so a retry will succeed. Log at ERROR to surface the inconsistency.
+        // so a retry will succeed. Surface orphaned deletions for reconciliation.
         if let Err(e) = self.store.delete(&envelopes_ns, entity_id.as_bytes()).await {
+            if !completed_deletions.is_empty() {
+                tracing::error!(
+                    schema = schema_name,
+                    entity_id,
+                    orphans = ?completed_deletions,
+                    error = %e,
+                    "envelope delete failed after Phase 1 cleanup — orphaned data requires reconciliation"
+                );
+                return Err(SigilError::Store(format!(
+                    "envelope delete failed: {e}; orphaned deletions: [{}]",
+                    completed_deletions.join(", ")
+                )));
+            }
             tracing::error!(
                 schema = schema_name,
                 entity_id,
                 error = %e,
-                "envelope delete failed after associated data cleanup — entity in degraded state, retry delete"
+                "envelope delete failed — no Phase 1 data was deleted"
             );
             return Err(SigilError::Store(e.to_string()));
         }
@@ -968,6 +986,82 @@ mod tests {
         coord.delete_envelope(&schema, "user1").await.unwrap();
 
         assert!(coord.get_envelope(&schema, "user1").await.is_err());
+    }
+
+    /// Mock ChronicleOps that always fails — used to trigger Phase 2 audit failure.
+    struct FailingChronicle;
+
+    impl shroudb_chronicle_core::ops::ChronicleOps for FailingChronicle {
+        fn record(
+            &self,
+            _event: shroudb_chronicle_core::event::Event,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>
+        {
+            Box::pin(async { Err("chronicle unavailable".to_string()) })
+        }
+
+        fn record_batch(
+            &self,
+            _events: Vec<shroudb_chronicle_core::event::Event>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>
+        {
+            Box::pin(async { Err("chronicle unavailable".to_string()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_surfaces_orphans_when_commit_fails() {
+        // Create an envelope with a credential field, then make the audit
+        // event fail so Phase 2 never completes. The error message must
+        // contain descriptions of the Phase 1 deletions (orphans).
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store.clone());
+        registry.init().await.unwrap();
+        registry.register(test_schema()).await.unwrap();
+
+        let credentials = Arc::new(CredentialManager::new(
+            store.clone(),
+            PasswordPolicy::default(),
+        ));
+
+        // Create with no chronicle so the create succeeds.
+        let capabilities_create = Arc::new(Capabilities::default());
+        let coord_create =
+            WriteCoordinator::new(store.clone(), credentials.clone(), capabilities_create);
+        coord_create
+            .create_envelope(&test_schema(), "user1", &entity_fields())
+            .await
+            .unwrap();
+
+        // Now build a coordinator with a failing Chronicle for the delete.
+        let capabilities_delete = Arc::new(Capabilities {
+            chronicle: Some(Arc::new(FailingChronicle)),
+            ..Default::default()
+        });
+        let coord_delete = WriteCoordinator::new(store.clone(), credentials, capabilities_delete);
+
+        let err = coord_delete
+            .delete_envelope(&test_schema(), "user1")
+            .await
+            .unwrap_err();
+        let err_msg = err.to_string();
+
+        // The error should mention orphaned deletions with credential info.
+        assert!(
+            err_msg.contains("orphaned deletions"),
+            "error should surface orphaned deletions, got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("credential:"),
+            "error should describe the deleted credential, got: {err_msg}"
+        );
+
+        // The envelope should still exist (Phase 2 was never reached).
+        let envelope = coord_delete.get_envelope(&test_schema(), "user1").await;
+        assert!(
+            envelope.is_ok(),
+            "envelope should still exist after failed commit"
+        );
     }
 
     #[tokio::test]
