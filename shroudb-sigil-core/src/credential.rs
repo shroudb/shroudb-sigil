@@ -25,6 +25,10 @@ pub struct PasswordPolicy {
     pub lockout_duration_secs: u64,
     pub min_length: usize,
     pub max_length: usize,
+    /// Maximum concurrent Argon2id hash/verify operations (0 = unlimited).
+    /// Each Argon2id hash uses ~64 MiB memory (m_cost=65536) × p_cost=4
+    /// parallelism lanes. Bounding concurrency prevents OOM under load.
+    pub max_concurrent_hashes: u32,
 }
 
 impl Default for PasswordPolicy {
@@ -35,6 +39,7 @@ impl Default for PasswordPolicy {
             lockout_duration_secs: 900, // 15 minutes
             min_length: 8,
             max_length: 128,
+            max_concurrent_hashes: 4,
         }
     }
 }
@@ -80,6 +85,7 @@ mod tests {
             lockout_duration_secs: 1800,
             min_length: 12,
             max_length: 256,
+            ..Default::default()
         };
         let json = serde_json::to_string(&policy).unwrap();
         let parsed: PasswordPolicy = serde_json::from_str(&json).unwrap();

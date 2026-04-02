@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use tokio::sync::Semaphore;
 use zeroize::Zeroize;
 
 use shroudb_sigil_core::credential::{CredentialRecord, PasswordAlgorithm, PasswordPolicy};
@@ -18,14 +19,28 @@ use crate::write_coordinator::credential_store_key;
 ///
 /// Credentials are keyed by `{entity_id}/{field_name}`, supporting
 /// multiple credential fields per schema (e.g., password + recovery_key).
+///
+/// Argon2id operations are bounded by `hash_semaphore` to prevent memory
+/// exhaustion under concurrent credential requests. Each hash uses ~64 MiB
+/// (m_cost=65536) × p_cost=4, so 4 concurrent hashes ≈ 1 GiB peak.
 pub struct CredentialManager<S: Store> {
     store: Arc<S>,
     policy: PasswordPolicy,
+    hash_semaphore: Arc<Semaphore>,
 }
 
 impl<S: Store> CredentialManager<S> {
     pub fn new(store: Arc<S>, policy: PasswordPolicy) -> Self {
-        Self { store, policy }
+        let permits = if policy.max_concurrent_hashes == 0 {
+            Semaphore::MAX_PERMITS
+        } else {
+            policy.max_concurrent_hashes as usize
+        };
+        Self {
+            store,
+            hash_semaphore: Arc::new(Semaphore::new(permits)),
+            policy,
+        }
     }
 
     /// Hash a new credential and store the credential record.
@@ -51,6 +66,11 @@ impl<S: Store> CredentialManager<S> {
             return Err(SigilError::EntityExists);
         }
 
+        let _permit = self
+            .hash_semaphore
+            .acquire()
+            .await
+            .map_err(|_| SigilError::Internal("hash semaphore closed".into()))?;
         let hash = hash_argon2id(plaintext)?;
         let record = CredentialRecord {
             entity_id: entity_id.to_string(),
@@ -150,7 +170,13 @@ impl<S: Store> CredentialManager<S> {
             record.failed_attempts = 0;
         }
 
-        // Verify credential against stored hash (any algorithm)
+        // Verify credential against stored hash (any algorithm).
+        // Acquire semaphore — Argon2id verify is CPU/memory intensive.
+        let _permit = self
+            .hash_semaphore
+            .acquire()
+            .await
+            .map_err(|_| SigilError::Internal("hash semaphore closed".into()))?;
         let valid = verify_password(plaintext, &record.hash)?;
 
         if valid {
@@ -202,6 +228,11 @@ impl<S: Store> CredentialManager<S> {
             .await?;
 
         // Hash new credential
+        let _permit = self
+            .hash_semaphore
+            .acquire()
+            .await
+            .map_err(|_| SigilError::Internal("hash semaphore closed".into()))?;
         let new_hash = hash_argon2id(new_plaintext)?;
 
         let ns = credentials_namespace(schema);
@@ -242,6 +273,11 @@ impl<S: Store> CredentialManager<S> {
     ) -> Result<(), SigilError> {
         self.validate_password_length(new_plaintext)?;
 
+        let _permit = self
+            .hash_semaphore
+            .acquire()
+            .await
+            .map_err(|_| SigilError::Internal("hash semaphore closed".into()))?;
         let new_hash = hash_argon2id(new_plaintext)?;
 
         let ns = credentials_namespace(schema);
