@@ -22,6 +22,7 @@ RUN --mount=type=secret,id=registry_token \
 # --- shroudb-sigil: credential envelope engine ---
 FROM alpine:3.21 AS shroudb-sigil
 RUN adduser -D -u 65532 shroudb && \
+    apk add --no-cache su-exec && \
     mkdir /data && chown shroudb:shroudb /data
 LABEL org.opencontainers.image.title="ShrouDB Sigil" \
       org.opencontainers.image.description="Schema-driven credential envelope engine with field-level crypto routing" \
@@ -30,11 +31,13 @@ LABEL org.opencontainers.image.title="ShrouDB Sigil" \
       org.opencontainers.image.source="https://github.com/bnlucas/shroudb-sigil" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0"
 COPY --from=builder /out/shroudb-sigil /shroudb-sigil
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 VOLUME /data
 WORKDIR /data
-USER shroudb
 EXPOSE 6499 6500
-ENTRYPOINT ["/shroudb-sigil"]
+ENTRYPOINT ["/docker-entrypoint.sh"]
+CMD ["/shroudb-sigil"]
 
 # --- shroudb-sigil-cli: CLI tool ---
 FROM alpine:3.21 AS shroudb-sigil-cli
