@@ -112,6 +112,32 @@ shroudb-sigil --config config.toml
 - **Account lockout:** configurable failed attempt threshold + lockout duration
 - **JWKS:** public key set for external JWT verification
 
+## Per-Field Blind Mode
+
+Sigil supports per-field blind mode in `ENVELOPE CREATE` and `ENVELOPE UPDATE` payloads (and their `USER` sugar equivalents). When a field value is wrapped with a blind object, Sigil skips server-side processing for that field and stores the pre-processed data directly.
+
+This lets clients perform encryption and tokenization locally (e.g., via `shroudb-cipher-blind` and `shroudb-veil-blind`) and send the results to Sigil without the server touching plaintext.
+
+```json
+{
+  "fields": {
+    "entity_id": "alice",
+    "email": {"blind": true, "value": "<ciphertext>", "tokens": "<b64 BlindTokenSet>"},
+    "name": {"blind": true, "value": "<ciphertext>"},
+    "role": "admin"
+  }
+}
+```
+
+The blind wrapper is per-request, per-field -- not a schema annotation. Schema annotations (`@pii`, `@searchable`) still define what processing a field needs. The blind wrapper says "I already did that processing." Standard (non-blind) fields in the same record are processed normally.
+
+| Field annotation | Blind behavior |
+|-----------------|----------------|
+| `pii` | `value` is a CiphertextEnvelope string; Cipher.encrypt() skipped |
+| `pii` + `searchable` | `value` is ciphertext + `tokens` is base64-encoded BlindTokenSet; Cipher and Veil skipped |
+| `credential` | `value` is pre-hashed; same as import mode |
+| (none) | Cannot use blind -- no processing to skip |
+
 ## Password Import
 
 Sigil accepts pre-hashed passwords for migration from existing systems:

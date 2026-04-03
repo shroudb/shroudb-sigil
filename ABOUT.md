@@ -14,6 +14,16 @@ Applications that handle credentials face a common problem: every field in a cre
 
 Sigil is entity-agnostic. The same schema annotations work for users, services, devices, or any entity that holds credentials. The generic `ENVELOPE` commands work with any entity type. The `USER` commands are sugar that infer the credential field — same engine underneath.
 
+## End-to-End Encryption (Per-Field Blind Mode)
+
+Sigil supports per-field blind mode, enabling true end-to-end encryption where the server never sees plaintext for sensitive fields. Clients perform encryption and tokenization locally using `shroudb-cipher-blind` and `shroudb-veil-blind`, then send the pre-processed results to Sigil.
+
+When a field value is wrapped with `{"blind": true, "value": "..."}`, Sigil skips server-side processing and stores the pre-processed data directly. For searchable PII fields, the wrapper also includes `"tokens"` containing a pre-computed BlindTokenSet. Standard (non-blind) fields in the same record are processed normally by the server -- you can mix both in a single request.
+
+This is a per-request, per-field decision, not a schema change. The schema annotations (`pii`, `searchable`, `credential`) still define what processing a field needs. The blind wrapper declares that the client has already performed that processing.
+
+**Why this matters:** In the default mode, Sigil's server performs Cipher encryption and Veil tokenization -- the server sees field plaintext transiently. With blind mode, plaintext never leaves the client. The server stores and indexes opaque ciphertext and tokens. This is the difference between "encrypted at rest" and "end-to-end encrypted."
+
 ## For Technical Leaders: Architecture and Trade-offs
 
 ### The Problem

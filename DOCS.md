@@ -115,6 +115,51 @@ Supported hash formats: Argon2id, Argon2i, Argon2d, bcrypt (`$2b$`/`$2a$`/`$2y$`
 
 Wire protocol: `ENVELOPE IMPORT <schema> <id> <json>` or `USER IMPORT <schema> <id> <json>`
 
+### Per-Field Blind Mode
+
+Individual fields in a create or update payload can be marked as blind. When a field includes `"blind": true`, Sigil skips server-side processing for that field and stores the pre-processed value directly. This enables client-side encryption and tokenization (end-to-end encryption) where the server never sees plaintext.
+
+The blind wrapper is per-request, per-field. It is not a schema annotation. The schema annotations (`pii`, `searchable`, `credential`) still define what processing a field requires. The blind wrapper signals that the client has already performed that processing.
+
+#### Blind wrapper format
+
+```json
+{"blind": true, "value": "<pre-processed value>"}
+{"blind": true, "value": "<ciphertext>", "tokens": "<b64 BlindTokenSet>"}
+```
+
+#### Behavior per field treatment
+
+| Annotation | Blind `value` | Blind `tokens` | What's skipped |
+|-----------|---------------|----------------|----------------|
+| `pii` | CiphertextEnvelope string (from `shroudb-cipher-blind`) | — | Cipher.encrypt() |
+| `pii` + `searchable` | CiphertextEnvelope string | Base64-encoded BlindTokenSet (from `shroudb-veil-blind`) | Cipher.encrypt() + Veil tokenization |
+| `credential` | Pre-hashed credential string | — | Argon2id hashing (same as import mode) |
+| (none) | Not allowed | — | Error: no processing to skip |
+
+#### Mixed payloads
+
+Blind and standard fields can coexist in the same request. Standard fields are processed normally by the server.
+
+```sh
+# Create with mixed blind and standard fields
+curl -X POST http://localhost:6500/sigil/myapp/users \
+  -H "Content-Type: application/json" \
+  -d '{
+    "fields": {
+      "entity_id": "alice",
+      "email": {"blind": true, "value": "<ciphertext>", "tokens": "<b64 BlindTokenSet>"},
+      "name": {"blind": true, "value": "<ciphertext>"},
+      "password": "correct-horse",
+      "org_id": "acme"
+    }
+  }'
+```
+
+In this example, `email` and `name` are blind (client-encrypted), while `password` is hashed server-side and `org_id` is stored as a plaintext index -- all in the same request.
+
+Wire protocol: blind fields use the same JSON format in `ENVELOPE CREATE`, `ENVELOPE UPDATE`, `USER CREATE`, and `USER UPDATE` payloads.
+
 ### Get
 
 ```sh

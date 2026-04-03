@@ -77,6 +77,19 @@ shroudb-sigil-cli/       # CLI tool
 | `PASSWORD IMPORT` | `<schema> <id> <hash> [META <json>]` | `{status, algorithm}` | Sugar: infers field |
 | `JWKS` | `<schema>` | `{keys: [...]}` | Public key set for JWT verification |
 
+### Per-Field Blind Mode
+
+Individual fields in `ENVELOPE CREATE`, `ENVELOPE UPDATE`, `USER CREATE`, and `USER UPDATE` payloads can include a blind wrapper. When `"blind": true` is present, Sigil skips server-side processing for that field and stores the pre-processed value directly.
+
+The blind wrapper is per-request, per-field -- not a schema annotation. Schema annotations still define what processing a field needs. The blind wrapper says "I already did that processing."
+
+| Annotation | Blind `value` | Blind `tokens` | Skipped |
+|-----------|---------------|----------------|---------|
+| `pii` | CiphertextEnvelope (from `shroudb-cipher-blind`) | — | Cipher.encrypt() |
+| `pii` + `searchable` | CiphertextEnvelope | Base64 BlindTokenSet (from `shroudb-veil-blind`) | Cipher + Veil |
+| `credential` | Pre-hashed string | — | Argon2id hashing |
+| (none) | Error | — | No processing to skip |
+
 ### Command Examples
 
 ```
@@ -85,6 +98,12 @@ shroudb-sigil-cli/       # CLI tool
 
 > USER CREATE myapp alice {"password":"s3cret","email":"alice@example.com","org_id":"acme"}
 {"status":"ok","entity_id":"alice","fields":{"org_id":"acme"},"created_at":1711843200}
+
+> USER CREATE myapp bob {"password":"hunter2","email":{"blind":true,"value":"<ciphertext>","tokens":"<b64 BlindTokenSet>"},"org_id":"acme"}
+{"status":"ok","entity_id":"bob","fields":{"org_id":"acme"},"created_at":1711843201}
+
+> ENVELOPE UPDATE myapp bob {"email":{"blind":true,"value":"<new-ciphertext>","tokens":"<new-b64 BlindTokenSet>"},"org_id":"newcorp"}
+{"status":"ok","entity_id":"bob","fields":{"org_id":"newcorp"},"updated_at":1711843300}
 
 > SESSION CREATE myapp alice s3cret
 {"status":"ok","access_token":"eyJ...","refresh_token":"abc123...","expires_in":900}
