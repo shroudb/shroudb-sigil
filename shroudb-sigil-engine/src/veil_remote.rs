@@ -69,13 +69,19 @@ impl VeilOps for RemoteVeilOps {
         field: Option<&str>,
         blind: bool,
     ) -> Pin<Box<dyn Future<Output = Result<(), SigilError>> + Send + '_>> {
-        let b64 = base64_encode(data);
+        // In standard mode: data is plaintext → base64-encode for the wire.
+        // In blind mode: data is already a base64-encoded BlindTokenSet string → pass as-is.
+        let wire_data = if blind {
+            String::from_utf8_lossy(data).into_owned()
+        } else {
+            base64_encode(data)
+        };
         let entry_id = entry_id.to_string();
         let field = field.map(String::from);
         Box::pin(async move {
             let mut client = self.fresh_client().await?;
             client
-                .put(&self.index, &entry_id, &b64, field.as_deref(), blind)
+                .put(&self.index, &entry_id, &wire_data, field.as_deref(), blind)
                 .await
                 .map_err(|e| SigilError::Internal(format!("veil put failed: {e}")))?;
             Ok(())

@@ -1711,3 +1711,295 @@ async fn update_searchable_pii_updates_blind_index() {
         .unwrap();
     assert!(results.matched > 0, "new email should be searchable");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Per-field blind mode — E2EE client-side encryption + tokenization
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn blind_per_field_e2ee_create_and_search() {
+    use shroudb_cipher_blind::{Algorithm, ClientKey};
+    use shroudb_veil_blind::{BlindKey, encode_for_wire, tokenize_and_blind};
+
+    // Start Cipher server (needed for schema validation, not for blind fields)
+    let cipher = match TestCipherServer::start().await {
+        Some(c) => c,
+        None => {
+            eprintln!("skipping: cipher binary not found");
+            return;
+        }
+    };
+    cipher.create_keyring("sigil-pii", "aes-256-gcm").await;
+
+    let veil = match TestVeilServer::start().await {
+        Some(v) => v,
+        None => {
+            eprintln!("skipping: veil binary not found");
+            return;
+        }
+    };
+    veil.create_index("sigil-search").await;
+
+    let server = TestServer::start_with_config(TestServerConfig {
+        cipher: Some(TestCipherConfig {
+            addr: cipher.tcp_addr.clone(),
+            keyring: "sigil-pii".to_string(),
+        }),
+        veil: Some(TestVeilConfig {
+            addr: veil.tcp_addr.clone(),
+            index: "sigil-search".to_string(),
+        }),
+        ..Default::default()
+    })
+    .await
+    .expect("sigil server failed to start");
+
+    let client = reqwest::Client::new();
+
+    // Register schema with searchable PII + encrypt-only PII
+    let resp = client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "blind-test",
+            "fields": [
+                {"name": "email", "field_type": "string", "annotations": {"pii": true, "searchable": true}},
+                {"name": "name", "field_type": "string", "annotations": {"pii": true}},
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+                {"name": "role", "field_type": "string"}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201, "schema register failed");
+
+    // Client-side keys (never sent to server)
+    let cipher_key = ClientKey::generate(Algorithm::Aes256Gcm).unwrap();
+    let search_key = BlindKey::generate().unwrap();
+
+    // Client-side encrypt + tokenize
+    let email_ciphertext = cipher_key
+        .encrypt(b"alice@example.com", b"blind-test/alice/email")
+        .unwrap();
+    let email_tokens = tokenize_and_blind(&search_key, "alice@example.com");
+    let email_tokens_b64 = encode_for_wire(&email_tokens).unwrap();
+
+    let name_ciphertext = cipher_key
+        .encrypt(b"Alice Johnson", b"blind-test/alice/name")
+        .unwrap();
+
+    // Create user with per-field blind wrappers
+    let resp = client
+        .post(server.http_url("/sigil/blind-test/users"))
+        .json(&serde_json::json!({
+            "fields": {
+                "entity_id": "alice",
+                "email": {"blind": true, "value": email_ciphertext, "tokens": email_tokens_b64},
+                "name": {"blind": true, "value": name_ciphertext},
+                "password": "test12345678",
+                "role": "admin"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        201,
+        "blind create failed: {}",
+        resp.text().await.unwrap_or_default()
+    );
+
+    // Get user — PII fields should be redacted
+    let resp = client
+        .get(server.http_url("/sigil/blind-test/users/alice"))
+        .send()
+        .await
+        .unwrap();
+    let user: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        user["fields"]["email"], "[encrypted]",
+        "email should be redacted"
+    );
+    assert_eq!(
+        user["fields"]["name"], "[encrypted]",
+        "name should be redacted"
+    );
+    assert_eq!(
+        user["fields"]["role"], "admin",
+        "inert field should be plaintext"
+    );
+
+    // Search via Veil — blind tokens should be searchable
+    let mut veil_client = shroudb_veil_client::VeilClient::connect(&veil.tcp_addr)
+        .await
+        .unwrap();
+
+    let query_tokens = tokenize_and_blind(&search_key, "alice");
+    let query_b64 = encode_for_wire(&query_tokens).unwrap();
+    let results = veil_client
+        .search(
+            "sigil-search",
+            &query_b64,
+            Some("contains"),
+            None,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+    assert!(
+        results.matched > 0,
+        "blind search should find entries for 'alice'"
+    );
+}
+
+#[tokio::test]
+async fn blind_per_field_mixed_with_standard() {
+    use shroudb_cipher_blind::{Algorithm, ClientKey};
+
+    // Start Cipher (needed for standard PII processing)
+    let cipher = match TestCipherServer::start().await {
+        Some(c) => c,
+        None => {
+            eprintln!("skipping: cipher binary not found");
+            return;
+        }
+    };
+    cipher.create_keyring("sigil-pii", "aes-256-gcm").await;
+
+    let server = TestServer::start_with_config(TestServerConfig {
+        cipher: Some(TestCipherConfig {
+            addr: cipher.tcp_addr.clone(),
+            keyring: "sigil-pii".to_string(),
+        }),
+        ..Default::default()
+    })
+    .await
+    .expect("sigil server failed to start");
+
+    let client = reqwest::Client::new();
+
+    // Schema with two PII fields — one will be blind, one standard
+    let resp = client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "mixed-blind",
+            "fields": [
+                {"name": "email", "field_type": "string", "annotations": {"pii": true}},
+                {"name": "phone", "field_type": "string", "annotations": {"pii": true}},
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Client encrypts email, server encrypts phone
+    let cipher_key = ClientKey::generate(Algorithm::Aes256Gcm).unwrap();
+    let email_ciphertext = cipher_key
+        .encrypt(b"alice@example.com", b"mixed-blind/alice/email")
+        .unwrap();
+
+    let resp = client
+        .post(server.http_url("/sigil/mixed-blind/users"))
+        .json(&serde_json::json!({
+            "fields": {
+                "entity_id": "alice",
+                "email": {"blind": true, "value": email_ciphertext},
+                "phone": "+1-555-0100",
+                "password": "test12345678"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        201,
+        "mixed blind create failed: {}",
+        resp.text().await.unwrap_or_default()
+    );
+
+    // Both PII fields should be redacted
+    let resp = client
+        .get(server.http_url("/sigil/mixed-blind/users/alice"))
+        .send()
+        .await
+        .unwrap();
+    let user: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(user["fields"]["email"], "[encrypted]");
+    assert_eq!(user["fields"]["phone"], "[encrypted]");
+}
+
+#[tokio::test]
+async fn blind_searchable_field_requires_tokens() {
+    let cipher = match TestCipherServer::start().await {
+        Some(c) => c,
+        None => {
+            eprintln!("skipping: cipher binary not found");
+            return;
+        }
+    };
+    cipher.create_keyring("sigil-pii", "aes-256-gcm").await;
+
+    let veil = match TestVeilServer::start().await {
+        Some(v) => v,
+        None => {
+            eprintln!("skipping: veil binary not found");
+            return;
+        }
+    };
+    veil.create_index("sigil-search").await;
+
+    let server = TestServer::start_with_config(TestServerConfig {
+        cipher: Some(TestCipherConfig {
+            addr: cipher.tcp_addr.clone(),
+            keyring: "sigil-pii".to_string(),
+        }),
+        veil: Some(TestVeilConfig {
+            addr: veil.tcp_addr.clone(),
+            index: "sigil-search".to_string(),
+        }),
+        ..Default::default()
+    })
+    .await
+    .expect("sigil server failed to start");
+
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "blind-missing-tokens",
+            "fields": [
+                {"name": "email", "field_type": "string", "annotations": {"pii": true, "searchable": true}},
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Blind searchable field WITHOUT tokens — should fail
+    let resp = client
+        .post(server.http_url("/sigil/blind-missing-tokens/users"))
+        .json(&serde_json::json!({
+            "fields": {
+                "entity_id": "alice",
+                "email": {"blind": true, "value": "some-ciphertext"},
+                "password": "test12345678"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        400,
+        "blind searchable without tokens should fail: {}",
+        resp.text().await.unwrap_or_default()
+    );
+}
