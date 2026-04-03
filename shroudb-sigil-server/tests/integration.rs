@@ -1108,7 +1108,7 @@ async fn cipher_veil_searchable_pii_roundtrip() {
         .await
         .unwrap();
     let results = veil_client
-        .search("sigil-search", "alice", None, None, None)
+        .search("sigil-search", "alice", None, None, None, false)
         .await
         .unwrap();
     assert!(results.matched > 0, "veil should find entries for 'alice'");
@@ -1498,7 +1498,14 @@ async fn delete_envelope_cleans_up_blind_index() {
         .await
         .unwrap();
     let results = veil_client
-        .search("sigil-search", "unique-cleanup-test", None, None, None)
+        .search(
+            "sigil-search",
+            "unique-cleanup-test",
+            None,
+            None,
+            None,
+            false,
+        )
         .await
         .unwrap();
     assert!(
@@ -1516,7 +1523,14 @@ async fn delete_envelope_cleans_up_blind_index() {
 
     // Verify blind index entry was cleaned up
     let results = veil_client
-        .search("sigil-search", "unique-cleanup-test", None, None, None)
+        .search(
+            "sigil-search",
+            "unique-cleanup-test",
+            None,
+            None,
+            None,
+            false,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -1676,7 +1690,7 @@ async fn update_searchable_pii_updates_blind_index() {
         .await
         .unwrap();
     let results = veil_client
-        .search("sigil-search", "old-email-unique", None, None, None)
+        .search("sigil-search", "old-email-unique", None, None, None, false)
         .await
         .unwrap();
     assert!(results.matched > 0, "old email should be searchable");
@@ -1692,7 +1706,7 @@ async fn update_searchable_pii_updates_blind_index() {
 
     // Verify new email is searchable
     let results = veil_client
-        .search("sigil-search", "new-email-unique", None, None, None)
+        .search("sigil-search", "new-email-unique", None, None, None, false)
         .await
         .unwrap();
     assert!(results.matched > 0, "new email should be searchable");

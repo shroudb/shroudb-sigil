@@ -65,16 +65,17 @@ impl VeilOps for RemoteVeilOps {
     fn put(
         &self,
         entry_id: &str,
-        plaintext: &[u8],
+        data: &[u8],
         field: Option<&str>,
+        blind: bool,
     ) -> Pin<Box<dyn Future<Output = Result<(), SigilError>> + Send + '_>> {
-        let b64 = base64_encode(plaintext);
+        let b64 = base64_encode(data);
         let entry_id = entry_id.to_string();
         let field = field.map(String::from);
         Box::pin(async move {
             let mut client = self.fresh_client().await?;
             client
-                .put(&self.index, &entry_id, &b64, field.as_deref())
+                .put(&self.index, &entry_id, &b64, field.as_deref(), blind)
                 .await
                 .map_err(|e| SigilError::Internal(format!("veil put failed: {e}")))?;
             Ok(())
@@ -101,6 +102,7 @@ impl VeilOps for RemoteVeilOps {
         query: &str,
         field: Option<&str>,
         limit: Option<usize>,
+        blind: bool,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<(String, f64)>, SigilError>> + Send + '_>> {
         let query = query.to_string();
         let field = field.map(String::from);
@@ -113,6 +115,7 @@ impl VeilOps for RemoteVeilOps {
                     Some("contains"),
                     field.as_deref(),
                     limit,
+                    blind,
                 )
                 .await
                 .map_err(|e| SigilError::Internal(format!("veil search failed: {e}")))?;

@@ -17,13 +17,22 @@ pub trait CipherOps: Send + Sync {
 
 /// Trait for Veil operations (blind index for searchable encrypted fields).
 pub trait VeilOps: Send + Sync {
-    fn put(&self, entry_id: &str, plaintext: &[u8], field: Option<&str>) -> BoxFut<'_, ()>;
+    /// Store blind tokens for an entry.
+    ///
+    /// When `blind` is false: `data` is plaintext — Veil tokenizes and blinds server-side.
+    /// When `blind` is true: `data` is a base64-encoded BlindTokenSet JSON — Veil stores directly.
+    fn put(&self, entry_id: &str, data: &[u8], field: Option<&str>, blind: bool) -> BoxFut<'_, ()>;
     fn delete(&self, entry_id: &str) -> BoxFut<'_, ()>;
+    /// Search a blind index.
+    ///
+    /// When `blind` is false: `query` is plain text — Veil tokenizes and blinds server-side.
+    /// When `blind` is true: `query` is a base64-encoded BlindTokenSet JSON.
     fn search(
         &self,
         query: &str,
         field: Option<&str>,
         limit: Option<usize>,
+        blind: bool,
     ) -> BoxFut<'_, Vec<(String, f64)>>;
 }
 

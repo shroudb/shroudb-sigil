@@ -23,6 +23,15 @@ enum CompensatingOp {
     Keep { path: String },
 }
 
+/// Data extracted from a per-field blind wrapper.
+struct BlindFieldData {
+    /// Pre-processed value (ciphertext for PII, pre-hashed for credentials).
+    value: String,
+    /// Pre-computed blind tokens (base64-encoded BlindTokenSet JSON).
+    /// Required for searchable fields, absent for encrypt-only fields.
+    tokens: Option<String>,
+}
+
 /// Coordinates all-or-nothing multi-field writes.
 ///
 /// A single envelope create can touch credentials (Argon2id hash),
@@ -249,8 +258,9 @@ impl<S: Store> WriteCoordinator<S> {
             .as_ref()
             .ok_or_else(|| SigilError::CapabilityMissing("veil".into()))?;
 
-        let results: Vec<(String, f64)> =
-            veil.search(field_value, Some(field_name), Some(1)).await?;
+        let results: Vec<(String, f64)> = veil
+            .search(field_value, Some(field_name), Some(1), false)
+            .await?;
 
         let (entry_id, _score) = results
             .into_iter()
@@ -364,46 +374,77 @@ impl<S: Store> WriteCoordinator<S> {
                     Ok(None)
                 }
                 FieldTreatment::EncryptedPii => {
-                    let cipher = self
-                        .capabilities
-                        .cipher
-                        .as_ref()
-                        .ok_or_else(|| SigilError::CapabilityMissing("cipher".into()))?;
-                    let plaintext = value.as_str().ok_or_else(|| SigilError::InvalidField {
-                        field: field_name.clone(),
-                        reason: "PII field must be a string".into(),
-                    })?;
-                    let context = format!("{}/{}/{}", schema.name, entity_id, field_name);
-                    let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
-                    record
-                        .fields
-                        .insert(field_name.clone(), serde_json::json!(ciphertext));
-                    Ok(None)
+                    let blind = Self::parse_blind_wrapper(value);
+                    if let Some(blind_data) = blind {
+                        record
+                            .fields
+                            .insert(field_name.clone(), serde_json::json!(blind_data.value));
+                        Ok(None)
+                    } else {
+                        let cipher = self
+                            .capabilities
+                            .cipher
+                            .as_ref()
+                            .ok_or_else(|| SigilError::CapabilityMissing("cipher".into()))?;
+                        let plaintext = value.as_str().ok_or_else(|| SigilError::InvalidField {
+                            field: field_name.clone(),
+                            reason: "PII field must be a string".into(),
+                        })?;
+                        let context = format!("{}/{}/{}", schema.name, entity_id, field_name);
+                        let ciphertext =
+                            cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
+                        record
+                            .fields
+                            .insert(field_name.clone(), serde_json::json!(ciphertext));
+                        Ok(None)
+                    }
                 }
                 FieldTreatment::SearchableEncrypted => {
-                    let cipher = self
-                        .capabilities
-                        .cipher
-                        .as_ref()
-                        .ok_or_else(|| SigilError::CapabilityMissing("cipher".into()))?;
-                    let veil = self
-                        .capabilities
-                        .veil
-                        .as_ref()
-                        .ok_or_else(|| SigilError::CapabilityMissing("veil".into()))?;
-                    let plaintext = value.as_str().ok_or_else(|| SigilError::InvalidField {
-                        field: field_name.clone(),
-                        reason: "searchable PII field must be a string".into(),
-                    })?;
-                    let context = format!("{}/{}/{}", schema.name, entity_id, field_name);
-                    let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
-                    let entry_id = format!("{}/{}", entity_id, field_name);
-                    veil.put(&entry_id, plaintext.as_bytes(), Some(field_name))
-                        .await?;
-                    record
-                        .fields
-                        .insert(field_name.clone(), serde_json::json!(ciphertext));
-                    Ok(Some(CompensatingOp::Veil { entry_id }))
+                    let blind = Self::parse_blind_wrapper(value);
+                    if let Some(blind_data) = blind {
+                        let tokens_b64 =
+                            blind_data.tokens.ok_or_else(|| SigilError::InvalidField {
+                                field: field_name.clone(),
+                                reason: "blind searchable field requires 'tokens'".into(),
+                            })?;
+                        let veil = self
+                            .capabilities
+                            .veil
+                            .as_ref()
+                            .ok_or_else(|| SigilError::CapabilityMissing("veil".into()))?;
+                        let entry_id = format!("{}/{}", entity_id, field_name);
+                        veil.put(&entry_id, tokens_b64.as_bytes(), Some(field_name), true)
+                            .await?;
+                        record
+                            .fields
+                            .insert(field_name.clone(), serde_json::json!(blind_data.value));
+                        Ok(Some(CompensatingOp::Veil { entry_id }))
+                    } else {
+                        let cipher = self
+                            .capabilities
+                            .cipher
+                            .as_ref()
+                            .ok_or_else(|| SigilError::CapabilityMissing("cipher".into()))?;
+                        let veil = self
+                            .capabilities
+                            .veil
+                            .as_ref()
+                            .ok_or_else(|| SigilError::CapabilityMissing("veil".into()))?;
+                        let plaintext = value.as_str().ok_or_else(|| SigilError::InvalidField {
+                            field: field_name.clone(),
+                            reason: "searchable PII field must be a string".into(),
+                        })?;
+                        let context = format!("{}/{}/{}", schema.name, entity_id, field_name);
+                        let ciphertext =
+                            cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
+                        let entry_id = format!("{}/{}", entity_id, field_name);
+                        veil.put(&entry_id, plaintext.as_bytes(), Some(field_name), false)
+                            .await?;
+                        record
+                            .fields
+                            .insert(field_name.clone(), serde_json::json!(ciphertext));
+                        Ok(Some(CompensatingOp::Veil { entry_id }))
+                    }
                 }
                 FieldTreatment::VersionedSecret => {
                     let keep = self
@@ -588,6 +629,19 @@ impl<S: Store> WriteCoordinator<S> {
         }
     }
 
+    /// Check if a field value is a blind wrapper: `{"blind": true, "value": "...", "tokens": "..."}`.
+    /// Returns `None` if the value is not a blind wrapper (standard mode).
+    fn parse_blind_wrapper(value: &serde_json::Value) -> Option<BlindFieldData> {
+        let obj = value.as_object()?;
+        if obj.get("blind")?.as_bool()? {
+            let val = obj.get("value")?.as_str()?.to_string();
+            let tokens = obj.get("tokens").and_then(|t| t.as_str()).map(String::from);
+            Some(BlindFieldData { value: val, tokens })
+        } else {
+            None
+        }
+    }
+
     async fn process_field(
         &self,
         schema_name: &str,
@@ -597,23 +651,31 @@ impl<S: Store> WriteCoordinator<S> {
         treatment: FieldTreatment,
         import_mode: bool,
     ) -> Result<FieldWriteResult, SigilError> {
+        // Check for per-field blind wrapper before standard processing.
+        let blind = Self::parse_blind_wrapper(value);
+
         match treatment {
             FieldTreatment::Credential => {
-                let field_value = value.as_str().ok_or_else(|| SigilError::InvalidField {
-                    field: field_name.to_string(),
-                    reason: "credential field must be a string".into(),
-                })?;
-
-                if import_mode {
-                    // Import: value is a pre-hashed password — validate and store directly
+                if let Some(blind_data) = blind {
+                    // Blind credential: pre-hashed value — same as import mode.
                     self.credentials
-                        .import_credential(schema_name, entity_id, field_name, field_value)
+                        .import_credential(schema_name, entity_id, field_name, &blind_data.value)
                         .await?;
                 } else {
-                    // Create: value is plaintext — hash with Argon2id
-                    self.credentials
-                        .set_credential(schema_name, entity_id, field_name, field_value)
-                        .await?;
+                    let field_value = value.as_str().ok_or_else(|| SigilError::InvalidField {
+                        field: field_name.to_string(),
+                        reason: "credential field must be a string".into(),
+                    })?;
+
+                    if import_mode {
+                        self.credentials
+                            .import_credential(schema_name, entity_id, field_name, field_value)
+                            .await?;
+                    } else {
+                        self.credentials
+                            .set_credential(schema_name, entity_id, field_name, field_value)
+                            .await?;
+                    }
                 }
 
                 Ok(FieldWriteResult {
@@ -627,53 +689,87 @@ impl<S: Store> WriteCoordinator<S> {
             }
 
             FieldTreatment::EncryptedPii => {
-                let cipher = self
-                    .capabilities
-                    .cipher
-                    .as_ref()
-                    .ok_or_else(|| SigilError::CapabilityMissing("cipher".into()))?;
+                if let Some(blind_data) = blind {
+                    // Blind PII: value is already a CiphertextEnvelope string.
+                    // Store directly — skip Cipher.encrypt().
+                    Ok(FieldWriteResult {
+                        compensating_op: None,
+                        record_value: Some(serde_json::json!(blind_data.value)),
+                    })
+                } else {
+                    let cipher = self
+                        .capabilities
+                        .cipher
+                        .as_ref()
+                        .ok_or_else(|| SigilError::CapabilityMissing("cipher".into()))?;
 
-                let plaintext = value.as_str().ok_or_else(|| SigilError::InvalidField {
-                    field: field_name.to_string(),
-                    reason: "PII field must be a string".into(),
-                })?;
+                    let plaintext = value.as_str().ok_or_else(|| SigilError::InvalidField {
+                        field: field_name.to_string(),
+                        reason: "PII field must be a string".into(),
+                    })?;
 
-                let context = format!("{schema_name}/{entity_id}/{field_name}");
-                let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
+                    let context = format!("{schema_name}/{entity_id}/{field_name}");
+                    let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
 
-                Ok(FieldWriteResult {
-                    compensating_op: None,
-                    record_value: Some(serde_json::json!(ciphertext)),
-                })
+                    Ok(FieldWriteResult {
+                        compensating_op: None,
+                        record_value: Some(serde_json::json!(ciphertext)),
+                    })
+                }
             }
 
             FieldTreatment::SearchableEncrypted => {
-                let cipher = self
-                    .capabilities
-                    .cipher
-                    .as_ref()
-                    .ok_or_else(|| SigilError::CapabilityMissing("cipher".into()))?;
-                let veil = self
-                    .capabilities
-                    .veil
-                    .as_ref()
-                    .ok_or_else(|| SigilError::CapabilityMissing("veil".into()))?;
+                if let Some(blind_data) = blind {
+                    // Blind searchable PII: value is ciphertext, tokens are
+                    // pre-computed BlindTokenSet. Skip Cipher + server-side Veil
+                    // tokenization.
+                    let tokens_b64 = blind_data.tokens.ok_or_else(|| SigilError::InvalidField {
+                        field: field_name.to_string(),
+                        reason: "blind searchable field requires 'tokens'".into(),
+                    })?;
 
-                let plaintext = value.as_str().ok_or_else(|| SigilError::InvalidField {
-                    field: field_name.to_string(),
-                    reason: "searchable PII field must be a string".into(),
-                })?;
+                    let veil = self
+                        .capabilities
+                        .veil
+                        .as_ref()
+                        .ok_or_else(|| SigilError::CapabilityMissing("veil".into()))?;
 
-                let context = format!("{schema_name}/{entity_id}/{field_name}");
-                let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
-                let entry_id = format!("{entity_id}/{field_name}");
-                veil.put(&entry_id, plaintext.as_bytes(), Some(field_name))
-                    .await?;
+                    let entry_id = format!("{entity_id}/{field_name}");
+                    veil.put(&entry_id, tokens_b64.as_bytes(), Some(field_name), true)
+                        .await?;
 
-                Ok(FieldWriteResult {
-                    compensating_op: Some(CompensatingOp::Veil { entry_id }),
-                    record_value: Some(serde_json::json!(ciphertext)),
-                })
+                    Ok(FieldWriteResult {
+                        compensating_op: Some(CompensatingOp::Veil { entry_id }),
+                        record_value: Some(serde_json::json!(blind_data.value)),
+                    })
+                } else {
+                    let cipher = self
+                        .capabilities
+                        .cipher
+                        .as_ref()
+                        .ok_or_else(|| SigilError::CapabilityMissing("cipher".into()))?;
+                    let veil = self
+                        .capabilities
+                        .veil
+                        .as_ref()
+                        .ok_or_else(|| SigilError::CapabilityMissing("veil".into()))?;
+
+                    let plaintext = value.as_str().ok_or_else(|| SigilError::InvalidField {
+                        field: field_name.to_string(),
+                        reason: "searchable PII field must be a string".into(),
+                    })?;
+
+                    let context = format!("{schema_name}/{entity_id}/{field_name}");
+                    let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
+                    let entry_id = format!("{entity_id}/{field_name}");
+                    veil.put(&entry_id, plaintext.as_bytes(), Some(field_name), false)
+                        .await?;
+
+                    Ok(FieldWriteResult {
+                        compensating_op: Some(CompensatingOp::Veil { entry_id }),
+                        record_value: Some(serde_json::json!(ciphertext)),
+                    })
+                }
             }
 
             FieldTreatment::VersionedSecret => {
@@ -1395,12 +1491,13 @@ mod tests {
         fn put(
             &self,
             entry_id: &str,
-            plaintext: &[u8],
+            data: &[u8],
             _field: Option<&str>,
+            _blind: bool,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
         {
             let id = entry_id.to_string();
-            let data = plaintext.to_vec();
+            let data = data.to_vec();
             Box::pin(async move {
                 self.entries.lock().unwrap().insert(id, data);
                 Ok(())
@@ -1424,6 +1521,7 @@ mod tests {
             _query: &str,
             _field: Option<&str>,
             _limit: Option<usize>,
+            _blind: bool,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<Output = Result<Vec<(String, f64)>, SigilError>>
@@ -1782,8 +1880,9 @@ mod tests {
         fn put(
             &self,
             _entry_id: &str,
-            _plaintext: &[u8],
+            _data: &[u8],
             _field: Option<&str>,
+            _blind: bool,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
         {
             Box::pin(async { Ok(()) })
@@ -1802,6 +1901,7 @@ mod tests {
             _query: &str,
             _field: Option<&str>,
             _limit: Option<usize>,
+            _blind: bool,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<Output = Result<Vec<(String, f64)>, SigilError>>
