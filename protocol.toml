@@ -218,7 +218,7 @@ parameters = [
     { name = "id", type = "string", required = true },
     { name = "field", type = "string", required = true, description = "Name of the credential field" },
     { name = "hash", type = "string", required = true, description = "PHC string or bcrypt format" },
-    { name = "metadata", type = "json", required = false },
+    { name = "meta", type = "json", required = false },
 ]
 response = { algorithm = "string" }
 http = { method = "POST", path = "/sigil/{schema}/credentials/import", request_body = "CredentialImportBody" }
@@ -298,7 +298,7 @@ parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true, description = "Entity ID" },
     { name = "password", type = "string", required = true },
-    { name = "metadata", type = "json", required = false, description = "Extra claims to merge into access token" },
+    { name = "meta", type = "json", required = false, description = "Extra claims to merge into access token" },
 ]
 response = { access_token = "string", refresh_token = "string", expires_in = "integer" }
 http = { method = "POST", path = "/sigil/{schema}/sessions", request_body = "LoginBody" }
@@ -375,7 +375,7 @@ parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true },
     { name = "hash", type = "string", required = true, description = "PHC string or bcrypt format" },
-    { name = "metadata", type = "json", required = false },
+    { name = "meta", type = "json", required = false },
 ]
 response = { algorithm = "string" }
 http = { method = "POST", path = "/sigil/{schema}/password/import", request_body = "ImportPasswordBody" }
