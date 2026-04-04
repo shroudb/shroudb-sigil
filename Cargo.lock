@@ -278,9 +278,9 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cc"
-version = "1.2.58"
+version = "1.2.59"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1e928d4b69e3077709075a938a05ffbedfa53a84c8f766efbf8220bb1ff60e1"
+checksum = "b7a4d3ec6524d28a329fc53654bbadc9bdd7b0431f5d65f1a56ffb28a1ee5283"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1057,9 +1057,9 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.13.0"
+version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
+checksum = "45a8a2b9cb3e0b0c1803dbb0758ffac5de2f425b23c28f518faabd9d805342ff"
 dependencies = [
  "equivalent",
  "hashbrown 0.16.1",
@@ -1981,9 +1981,9 @@ dependencies = [
 
 [[package]]
 name = "semver"
-version = "1.0.27"
+version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"
@@ -2099,9 +2099,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-chronicle-core"
-version = "1.2.12"
+version = "1.2.17"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "98ebf5ccf86736aeb7f175fcb111690ae021e10b81abec8616b5aa8519b49461"
+checksum = "1a7840f8763849c0caaa8e2e35fa70d118f01395ec02142527fce560e74ccbdb"
 dependencies = [
  "serde",
  "serde_json",
@@ -2128,9 +2128,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-cipher-client"
-version = "1.4.7"
+version = "1.4.8"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "b28e149c16c7248a922fedeab474408745d8669c476ed32dc13b45d95bd71880"
+checksum = "a0a1cabc46cede52be1d83cf3371763de678218b53ffded58f85d2b7b06ad854"
 dependencies = [
  "serde",
  "serde_json",
@@ -2191,9 +2191,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-keep-client"
-version = "1.4.6"
+version = "1.4.7"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "5ac22af90ed8485370e3f5b908fb9473e106dd7bc55d30a5ecfeae71ad6d6e5a"
+checksum = "2e74fec8959b6dc4b91c6fc1a202008a7ead354b04b05864e2be012a6bfa3a53"
 dependencies = [
  "serde",
  "serde_json",
@@ -2213,9 +2213,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-server-tcp"
-version = "0.1.0"
+version = "0.1.1"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "595bfdc92325ca901e5af7ef05f92510a4793b26149791da395abcf6441f3bb5"
+checksum = "b4d059cf8c8b21c5784657a84f4ccc90883646bcd98996b9c615691032fb2d45"
 dependencies = [
  "serde_json",
  "shroudb-acl",
@@ -2226,7 +2226,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-cli"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2237,7 +2237,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-client"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2247,7 +2247,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-core"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2256,7 +2256,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-engine"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "argon2",
  "base64",
@@ -2283,7 +2283,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-protocol"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2300,7 +2300,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-server"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2335,9 +2335,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-storage"
-version = "0.2.14"
+version = "0.2.15"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "c77c1552528c8370bfcef78130bbdd3fbd29d94fb329daff4948c0043e46c16c"
+checksum = "c9b08b0124790519fa8679e6e56feaa5d6d791d4373f2045fa07e78ae94dc671"
 dependencies = [
  "crc32fast",
  "dashmap",
@@ -2644,9 +2644,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.50.0"
+version = "1.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27ad5e34374e03cfffefc301becb44e9dc3c17584f414349ebe29ed26661822d"
+checksum = "2bd1c4c0fc4a7ab90fc15ef6daaa3ec3b893f004f915f2392557ed23237820cd"
 dependencies = [
  "bytes",
  "libc",
@@ -2661,9 +2661,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-macros"
-version = "2.6.1"
+version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c55a2eff8b69ce66c84f85e1da1c233edc36ceb85a2058d11b0d6a3c7e7569c"
+checksum = "385a6cb71ab9ab790c5fe8d67f1645e6c450a7ce006a33de03daa956cf70a496"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3320,9 +3320,9 @@ dependencies = [
 
 [[package]]
 name = "writeable"
-version = "0.6.2"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
+checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "yoke"
