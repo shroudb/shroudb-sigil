@@ -109,11 +109,11 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // Sigil engine
-    let jwt_algorithm = parse_jwt_algorithm(&cfg.auth.jwt_algorithm)?;
+    let jwt_algorithm = parse_jwt_algorithm(&cfg.jwt.jwt_algorithm)?;
     let sigil_config = SigilConfig {
         jwt_algorithm,
-        access_ttl_secs: parse_duration_secs(&cfg.auth.access_ttl)?,
-        refresh_ttl_secs: parse_duration_secs(&cfg.auth.refresh_ttl)?,
+        access_ttl_secs: parse_duration_secs(&cfg.jwt.access_ttl)?,
+        refresh_ttl_secs: parse_duration_secs(&cfg.jwt.refresh_ttl)?,
         ..Default::default()
     };
     // Capabilities: connect to external engines
@@ -183,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // Auth: build token validator from config
-    let token_validator = config::build_token_validator(&cfg.auth);
+    let token_validator = cfg.auth.build_validator();
     if token_validator.is_some() {
         tracing::info!(tokens = cfg.auth.tokens.len(), "token-based auth enabled");
     }

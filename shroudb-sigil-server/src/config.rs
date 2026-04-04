@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use serde::Deserialize;
+use shroudb_acl::ServerAuthConfig;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct SigilServerConfig {
@@ -10,7 +11,9 @@ pub struct SigilServerConfig {
     #[serde(default)]
     pub store: StoreConfig,
     #[serde(default)]
-    pub auth: AuthConfig,
+    pub auth: ServerAuthConfig,
+    #[serde(default)]
+    pub jwt: JwtConfig,
     #[serde(default)]
     pub cipher: Option<CipherConfig>,
     #[serde(default)]
@@ -164,98 +167,23 @@ fn default_data_dir() -> PathBuf {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct AuthConfig {
+pub struct JwtConfig {
     #[serde(default = "default_access_ttl")]
     pub access_ttl: String,
     #[serde(default = "default_refresh_ttl")]
     pub refresh_ttl: String,
     #[serde(default = "default_jwt_algorithm")]
     pub jwt_algorithm: String,
-    /// Auth method. When set to "token", clients must authenticate.
-    #[serde(default)]
-    pub method: Option<String>,
-    /// Token definitions keyed by the raw token string.
-    #[serde(default)]
-    pub tokens: std::collections::HashMap<String, TokenConfig>,
 }
 
-impl Default for AuthConfig {
+impl Default for JwtConfig {
     fn default() -> Self {
         Self {
             access_ttl: default_access_ttl(),
             refresh_ttl: default_refresh_ttl(),
             jwt_algorithm: default_jwt_algorithm(),
-            method: None,
-            tokens: std::collections::HashMap::new(),
         }
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct TokenConfig {
-    pub tenant: String,
-    #[serde(default = "default_actor")]
-    pub actor: String,
-    #[serde(default)]
-    pub platform: bool,
-    #[serde(default)]
-    pub grants: Vec<GrantConfig>,
-}
-
-fn default_actor() -> String {
-    "anonymous".to_string()
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct GrantConfig {
-    pub namespace: String,
-    #[serde(default)]
-    pub scopes: Vec<String>,
-}
-
-/// Build a StaticTokenValidator from the auth config.
-pub fn build_token_validator(
-    config: &AuthConfig,
-) -> Option<std::sync::Arc<dyn shroudb_acl::TokenValidator>> {
-    if config.method.as_deref() != Some("token") || config.tokens.is_empty() {
-        return None;
-    }
-
-    let mut validator = shroudb_acl::StaticTokenValidator::new();
-
-    for (raw_token, token_config) in &config.tokens {
-        let grants: Vec<shroudb_acl::TokenGrant> = token_config
-            .grants
-            .iter()
-            .map(|g| {
-                let scopes: Vec<shroudb_acl::Scope> = g
-                    .scopes
-                    .iter()
-                    .filter_map(|s| match s.to_lowercase().as_str() {
-                        "read" => Some(shroudb_acl::Scope::Read),
-                        "write" => Some(shroudb_acl::Scope::Write),
-                        _ => None,
-                    })
-                    .collect();
-                shroudb_acl::TokenGrant {
-                    namespace: g.namespace.clone(),
-                    scopes,
-                }
-            })
-            .collect();
-
-        let token = shroudb_acl::Token {
-            tenant: token_config.tenant.clone(),
-            actor: token_config.actor.clone(),
-            is_platform: token_config.platform,
-            grants,
-            expires_at: None,
-        };
-
-        validator.register(raw_token.clone(), token);
-    }
-
-    Some(std::sync::Arc::new(validator))
 }
 
 fn default_access_ttl() -> String {
