@@ -184,6 +184,7 @@ impl<S: Store> WriteCoordinator<S> {
 
         let mut completed_ops: Vec<CompensatingOp> = Vec::new();
         let mut record_fields: HashMap<String, serde_json::Value> = HashMap::new();
+        let mut blind_fields: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         // Process each field according to its treatment
         for field_def in &schema.fields {
@@ -208,6 +209,9 @@ impl<S: Store> WriteCoordinator<S> {
                     }
                     if let Some(stored_value) = field_result.record_value {
                         record_fields.insert(field_def.name.clone(), stored_value);
+                    }
+                    if field_result.is_blind {
+                        blind_fields.insert(field_def.name.clone());
                     }
                 }
                 Err(e) => {
@@ -235,6 +239,7 @@ impl<S: Store> WriteCoordinator<S> {
             fields: record_fields,
             created_at: now,
             updated_at: now,
+            blind_fields,
         };
 
         let value = serde_json::to_vec(&record).map_err(|e| SigilError::Internal(e.to_string()))?;
@@ -314,9 +319,14 @@ impl<S: Store> WriteCoordinator<S> {
                 continue;
             }
 
-            if decrypt {
+            if record.blind_fields.contains(&field_def.name) {
+                // Blind field: client-encrypted, server cannot decrypt. Always redact.
+                record
+                    .fields
+                    .insert(field_def.name.clone(), serde_json::json!("[encrypted]"));
+            } else if decrypt {
                 if let Some(cipher) = self.capabilities.cipher.as_ref() {
-                    // Decrypt PII field using the same context used during encryption
+                    // Decrypt server-encrypted PII field
                     let ciphertext = record.fields[&field_def.name]
                         .as_str()
                         .ok_or_else(|| SigilError::Internal("PII field is not a string".into()))?;
@@ -410,6 +420,7 @@ impl<S: Store> WriteCoordinator<S> {
                         record
                             .fields
                             .insert(field_name.clone(), serde_json::json!(blind_data.value));
+                        record.blind_fields.insert(field_name.clone());
                         Ok(None)
                     } else {
                         let cipher = self
@@ -427,6 +438,7 @@ impl<S: Store> WriteCoordinator<S> {
                         record
                             .fields
                             .insert(field_name.clone(), serde_json::json!(ciphertext));
+                        record.blind_fields.remove(field_name.as_str());
                         Ok(None)
                     }
                 }
@@ -449,6 +461,7 @@ impl<S: Store> WriteCoordinator<S> {
                         record
                             .fields
                             .insert(field_name.clone(), serde_json::json!(blind_data.value));
+                        record.blind_fields.insert(field_name.clone());
                         Ok(Some(CompensatingOp::Veil { entry_id }))
                     } else {
                         let cipher = self
@@ -716,6 +729,7 @@ impl<S: Store> WriteCoordinator<S> {
                     }),
                     // Don't store the credential in the envelope record
                     record_value: None,
+                    is_blind: false,
                 })
             }
 
@@ -726,6 +740,7 @@ impl<S: Store> WriteCoordinator<S> {
                     Ok(FieldWriteResult {
                         compensating_op: None,
                         record_value: Some(serde_json::json!(blind_data.value)),
+                        is_blind: true,
                     })
                 } else {
                     let cipher = self
@@ -745,6 +760,7 @@ impl<S: Store> WriteCoordinator<S> {
                     Ok(FieldWriteResult {
                         compensating_op: None,
                         record_value: Some(serde_json::json!(ciphertext)),
+                        is_blind: false,
                     })
                 }
             }
@@ -772,6 +788,7 @@ impl<S: Store> WriteCoordinator<S> {
                     Ok(FieldWriteResult {
                         compensating_op: Some(CompensatingOp::Veil { entry_id }),
                         record_value: Some(serde_json::json!(blind_data.value)),
+                        is_blind: true,
                     })
                 } else {
                     let cipher = self
@@ -799,6 +816,7 @@ impl<S: Store> WriteCoordinator<S> {
                     Ok(FieldWriteResult {
                         compensating_op: Some(CompensatingOp::Veil { entry_id }),
                         record_value: Some(serde_json::json!(ciphertext)),
+                        is_blind: false,
                     })
                 }
             }
@@ -819,6 +837,7 @@ impl<S: Store> WriteCoordinator<S> {
                 Ok(FieldWriteResult {
                     compensating_op: Some(CompensatingOp::Keep { path: key }),
                     record_value: None,
+                    is_blind: false,
                 })
             }
 
@@ -827,6 +846,7 @@ impl<S: Store> WriteCoordinator<S> {
                 Ok(FieldWriteResult {
                     compensating_op: None,
                     record_value: Some(value.clone()),
+                    is_blind: false,
                 })
             }
         }
@@ -904,6 +924,8 @@ struct FieldWriteResult {
     compensating_op: Option<CompensatingOp>,
     /// If set, this value is stored in the envelope record (non-sensitive fields only).
     record_value: Option<serde_json::Value>,
+    /// True if this field was blind-encrypted (client-side). The server cannot decrypt it.
+    is_blind: bool,
 }
 
 fn envelopes_namespace(schema: &str) -> String {

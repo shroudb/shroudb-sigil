@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +14,10 @@ pub struct EnvelopeRecord {
     pub fields: HashMap<String, serde_json::Value>,
     pub created_at: u64,
     pub updated_at: u64,
+    /// Fields encrypted client-side (blind mode). These cannot be decrypted
+    /// by the server — they are always redacted on read.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub blind_fields: HashSet<String>,
 }
 
 #[cfg(test)]
@@ -35,6 +39,7 @@ mod tests {
             fields,
             created_at: 1690000000,
             updated_at: 1695000000,
+            blind_fields: HashSet::new(),
         };
 
         let json = serde_json::to_string(&record).unwrap();
@@ -65,6 +70,7 @@ mod tests {
             fields: HashMap::new(),
             created_at: 1700000000,
             updated_at: 1700000000,
+            blind_fields: HashSet::new(),
         };
 
         let json = serde_json::to_string(&record).unwrap();

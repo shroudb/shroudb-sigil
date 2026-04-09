@@ -195,7 +195,34 @@ ENVELOPE VERIFY myapp svc1 api_key supersecretkey1
 
 For multi-credential schemas or non-user entities, `ENVELOPE VERIFY` takes the credential field name explicitly. `USER VERIFY` infers it from the schema.
 
+### Lookup
+
+Look up an envelope by an indexed or searchable field value.
+
+```sh
+# HTTP
+curl -X POST http://localhost:6500/sigil/myapp/lookup \
+  -H "Content-Type: application/json" \
+  -d '{"field": "email", "value": "alice@example.com"}'
+
+# Wire protocol (generic)
+ENVELOPE LOOKUP myapp email alice@example.com
+
+# Wire protocol (user sugar)
+USER LOOKUP myapp email alice@example.com
+```
+
+Returns the matching envelope record.
+
 ## Authentication
+
+### AUTH
+
+When token-based auth is enabled, connections must authenticate before issuing protected commands.
+
+```
+AUTH <token>
+```
 
 ### Login
 
@@ -213,6 +240,20 @@ Returns:
   "expires_in": 900
 }
 ```
+
+Wire protocol: `SESSION CREATE <schema> <id> <password> [META <json>]`
+
+### Login by Field
+
+Login using a field value (e.g., email) instead of entity ID.
+
+```sh
+curl -X POST http://localhost:6500/sigil/myapp/sessions/login \
+  -H "Content-Type: application/json" \
+  -d '{"field": "email", "value": "alice@example.com", "password": "correct-horse"}'
+```
+
+Wire protocol: `SESSION LOGIN <schema> <field> <value> <password> [META <json>]`
 
 ### Refresh
 
@@ -283,6 +324,59 @@ Accepts pre-hashed credentials in Argon2id, Argon2i, Argon2d, bcrypt, or scrypt 
 ## Account Lockout
 
 After a configurable number of failed credential verification attempts (default: 5), the credential is locked for a configurable duration (default: 15 minutes). Correct credential during lockout still returns locked. Credential reset clears lockout. Lockout is per credential field — locking the `password` field doesn't affect the `recovery_key` field.
+
+## Envelope Recovery
+
+Sigil does not implement a password reset workflow (token issuance, email delivery, single-use enforcement). Those are application-level concerns that depend on delivery mechanisms Sigil has no knowledge of. Instead, Sigil provides the primitives that any recovery workflow builds on.
+
+### Recovery via a secondary credential
+
+A schema can declare multiple credential fields. Each has independent lockout state. This lets a consumer verify identity through one credential and reset another.
+
+```sh
+# Schema with a recovery credential
+SCHEMA REGISTER myapp {"fields":[
+  {"name":"email",        "field_type":"string", "annotations":{"pii":true,"searchable":true}},
+  {"name":"password",     "field_type":"string", "annotations":{"credential":true}},
+  {"name":"recovery_key", "field_type":"string", "annotations":{"credential":true}},
+  {"name":"org_id",       "field_type":"string", "annotations":{"index":true}}
+]}
+```
+
+The recovery flow is two steps:
+
+```sh
+# 1. Verify identity via the recovery credential
+ENVELOPE VERIFY myapp alice recovery_key user-recovery-key-value
+
+# 2. Reset the primary credential (clears lockout)
+CREDENTIAL RESET myapp alice password new-password
+```
+
+`CREDENTIAL RESET` replaces the hash without requiring the old value and clears any lockout on that field. It is gated by ACL config (or Sentry policy when configured).
+
+### Recovery via application-issued token
+
+When the consumer owns the proof-of-identity mechanism (email link, SMS OTP, admin action), the pattern is simpler — the consumer validates identity externally and calls reset directly:
+
+```sh
+# Consumer has already validated the reset token / OTP / admin approval
+PASSWORD RESET myapp alice new-password
+```
+
+### What Sigil owns vs. what the consumer owns
+
+| Concern | Owner |
+|---------|-------|
+| Credential hashing and storage | Sigil |
+| Reset without old credential (`CREDENTIAL RESET`) | Sigil |
+| Lockout clear on reset | Sigil |
+| Per-field independent lockout | Sigil |
+| ACL / policy gating on reset | Sigil (config or Sentry) |
+| Proof of identity (token, OTP, recovery key verification) | Consumer |
+| Token issuance and single-use enforcement | Consumer |
+| Delivery mechanism (email, SMS, push) | Consumer |
+| Deciding which recovery method to offer | Consumer |
 
 ## Security
 

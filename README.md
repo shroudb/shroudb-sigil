@@ -53,7 +53,9 @@ GET    /sigil/{schema}/users/{id}             — get user
 PATCH  /sigil/{schema}/users/{id}             — update non-credential fields
 DELETE /sigil/{schema}/users/{id}             — delete user
 POST   /sigil/{schema}/verify                 — verify credentials
+POST   /sigil/{schema}/lookup                 — lookup by indexed field
 POST   /sigil/{schema}/sessions               — login (issue tokens)
+POST   /sigil/{schema}/sessions/login         — login by field value (e.g., email)
 DELETE /sigil/{schema}/sessions               — logout
 POST   /sigil/{schema}/sessions/refresh       — refresh tokens
 GET    /sigil/{schema}/sessions/{user_id}     — list sessions
@@ -66,25 +68,70 @@ GET    /sigil/health                          — health check
 
 ## Wire Protocol (RESP3)
 
+### Schema
+
 ```
 SCHEMA REGISTER <name> <json>
 SCHEMA GET <name>
 SCHEMA LIST
+```
+
+### Envelope (generic -- any entity type)
+
+```
+ENVELOPE CREATE <schema> <id> <json>
+ENVELOPE GET <schema> <id>
+ENVELOPE IMPORT <schema> <id> <json>
+ENVELOPE UPDATE <schema> <id> <json>
+ENVELOPE DELETE <schema> <id>
+ENVELOPE VERIFY <schema> <id> <field> <value>
+ENVELOPE LOOKUP <schema> <field> <value>
+```
+
+### User (sugar -- infers credential field from schema)
+
+```
 USER CREATE <schema> <id> <json>
 USER IMPORT <schema> <id> <json>
 USER GET <schema> <id>
 USER UPDATE <schema> <id> <json>
 USER DELETE <schema> <id>
 USER VERIFY <schema> <id> <password>
+USER LOOKUP <schema> <field> <value>
+```
+
+### Session
+
+```
 SESSION CREATE <schema> <id> <password> [META <json>]
+SESSION LOGIN <schema> <field> <value> <password> [META <json>]
 SESSION REFRESH <schema> <token>
 SESSION REVOKE <schema> <token>
 SESSION REVOKE ALL <schema> <id>
 SESSION LIST <schema> <id>
+```
+
+### Credential (generic -- explicit field)
+
+```
+CREDENTIAL CHANGE <schema> <id> <field> <old> <new>
+CREDENTIAL RESET <schema> <id> <field> <new>
+CREDENTIAL IMPORT <schema> <id> <field> <hash> [META <json>]
+```
+
+### Password (sugar -- infers credential field)
+
+```
 PASSWORD CHANGE <schema> <id> <old> <new>
 PASSWORD RESET <schema> <id> <new>
 PASSWORD IMPORT <schema> <id> <hash> [META <json>]
+```
+
+### JWT and Operational
+
+```
 JWKS <schema>
+AUTH <token>
 HEALTH
 ```
 

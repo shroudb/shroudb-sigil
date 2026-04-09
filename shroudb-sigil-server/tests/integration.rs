@@ -961,7 +961,7 @@ async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
         resp.text().await
     );
 
-    // Get user — email should be redacted (PII is never exposed via GET)
+    // Get user — server-encrypted PII is decrypted on read (HIGH-12)
     let resp = client
         .get(server.http_url("/sigil/pii-test/users/alice"))
         .send()
@@ -972,8 +972,8 @@ async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
     assert_eq!(user["entity_id"], "alice");
     assert_eq!(user["fields"]["org"], "acme");
     assert_eq!(
-        user["fields"]["email"], "[encrypted]",
-        "PII field should be redacted on read"
+        user["fields"]["email"], "alice@example.com",
+        "server-encrypted PII should be decrypted on read"
     );
 
     // Password should not be in user record
@@ -991,7 +991,7 @@ async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    // Verify updated PII is still redacted
+    // Verify updated PII is decrypted
     let resp = client
         .get(server.http_url("/sigil/pii-test/users/alice"))
         .send()
@@ -999,8 +999,8 @@ async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
         .unwrap();
     let user: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(
-        user["fields"]["email"], "[encrypted]",
-        "updated PII should still be redacted"
+        user["fields"]["email"], "newalice@example.com",
+        "updated server-encrypted PII should be decrypted on read"
     );
 
     // Verify credentials still work
@@ -1094,14 +1094,14 @@ async fn cipher_veil_searchable_pii_roundtrip() {
         assert_eq!(resp.status(), 201, "create {id} failed");
     }
 
-    // Get user — email should be redacted
+    // Get user — server-encrypted searchable PII is decrypted on read (HIGH-12)
     let resp = client
         .get(server.http_url("/sigil/search-test/users/alice"))
         .send()
         .await
         .unwrap();
     let user: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(user["fields"]["email"], "[encrypted]");
+    assert_eq!(user["fields"]["email"], "alice@example.com");
 
     // Search via Veil directly to verify indexing worked
     let mut veil_client = shroudb_veil_client::VeilClient::connect(&veil.tcp_addr)
@@ -1253,8 +1253,7 @@ async fn login_by_encrypted_email() {
         "unknown email should fail"
     );
 
-    // ── Verify the email is redacted in GET ────────────────────────
-    // PII is never exposed via GET — Courier handles just-in-time access
+    // ── Verify server-encrypted PII is decrypted in GET (HIGH-12) ──
     let resp = client
         .get(server.http_url("/sigil/app/users/u_abc123"))
         .send()
@@ -1262,8 +1261,8 @@ async fn login_by_encrypted_email() {
         .unwrap();
     let user: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(
-        user["fields"]["email"], "[encrypted]",
-        "PII should be redacted, not decrypted"
+        user["fields"]["email"], "alice@example.com",
+        "server-encrypted PII should be decrypted on read"
     );
 }
 
@@ -1603,18 +1602,21 @@ async fn pii_fields_never_expose_ciphertext() {
         .unwrap();
     let user: serde_json::Value = resp.json().await.unwrap();
 
-    // PII fields must show [encrypted], never ciphertext
-    assert_eq!(user["fields"]["email"], "[encrypted]");
-    assert_eq!(user["fields"]["ssn"], "[encrypted]");
+    // Server-encrypted PII is decrypted on read (HIGH-12), never raw ciphertext
+    assert_eq!(user["fields"]["email"], "alice@example.com");
+    assert_eq!(user["fields"]["ssn"], "123-45-6789");
     // Non-PII field is plaintext
     assert_eq!(user["fields"]["name"], "Alice");
     // Credential field must not appear at all
     assert!(user["fields"].get("password").is_none());
 
-    // The response body as a whole must not contain any plaintext PII
+    // Verify the response contains decrypted plaintext, not raw ciphertext
     let body = serde_json::to_string(&user).unwrap();
-    assert!(!body.contains("alice@example.com"));
-    assert!(!body.contains("123-45-6789"));
+    assert!(body.contains("alice@example.com"));
+    assert!(
+        !body.contains("[encrypted]"),
+        "server-encrypted PII should be decrypted, not redacted"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1922,15 +1924,21 @@ async fn blind_per_field_mixed_with_standard() {
         resp.text().await.unwrap_or_default()
     );
 
-    // Both PII fields should be redacted
+    // Blind PII stays redacted, server-encrypted PII is decrypted (HIGH-12)
     let resp = client
         .get(server.http_url("/sigil/mixed-blind/users/alice"))
         .send()
         .await
         .unwrap();
     let user: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(user["fields"]["email"], "[encrypted]");
-    assert_eq!(user["fields"]["phone"], "[encrypted]");
+    assert_eq!(
+        user["fields"]["email"], "[encrypted]",
+        "blind field stays redacted"
+    );
+    assert_eq!(
+        user["fields"]["phone"], "+1-555-0100",
+        "server-encrypted PII is decrypted"
+    );
 }
 
 #[tokio::test]

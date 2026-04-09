@@ -1,4 +1,4 @@
-# Sigil (formerly Auth) — Agent Instructions
+# Sigil — Agent Instructions
 
 > Schema-driven credential envelope engine: field-level crypto routing for passwords, PII, secrets, and searchable encrypted data with JWT session management.
 
@@ -76,6 +76,13 @@ shroudb-sigil-cli/       # CLI tool
 | `PASSWORD RESET` | `<schema> <id> <new>` | `{status}` | Sugar: infers field |
 | `PASSWORD IMPORT` | `<schema> <id> <hash> [META <json>]` | `{status, algorithm}` | Sugar: infers field |
 | `JWKS` | `<schema>` | `{keys: [...]}` | Public key set for JWT verification |
+
+### Operational
+
+| Command | Args | Returns | Description |
+|---------|------|---------|-------------|
+| `AUTH` | `<token>` | `{status}` | Authenticate connection |
+| `HEALTH` | -- | `{status}` | Health check |
 
 ### Per-Field Blind Mode
 
