@@ -133,7 +133,9 @@ impl<S: Store> SigilEngine<S> {
         entity_id: &str,
     ) -> Result<EnvelopeRecord, SigilError> {
         let schema = self.schemas.get(schema_name).await?;
-        self.coordinator.get_envelope(&schema, entity_id).await
+        self.coordinator
+            .get_envelope(&schema, entity_id, true)
+            .await
     }
 
     pub async fn envelope_update(

@@ -589,9 +589,9 @@ dependencies = [
 
 [[package]]
 name = "fastrand"
-version = "2.3.0"
+version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "find-msvc-tools"
@@ -2099,9 +2099,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-chronicle-core"
-version = "1.2.17"
+version = "1.3.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "1a7840f8763849c0caaa8e2e35fa70d118f01395ec02142527fce560e74ccbdb"
+checksum = "5e980a9f0ce453ed8a8b070bc9f3368fd1f5ddf5c59f086f3c76cbe319bd98e5"
 dependencies = [
  "serde",
  "serde_json",
@@ -2128,9 +2128,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-cipher-client"
-version = "1.4.8"
+version = "1.4.10"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "a0a1cabc46cede52be1d83cf3371763de678218b53ffded58f85d2b7b06ad854"
+checksum = "56d7f739e0637e12efaacbd74014db9fec6554d5b89ed80331f101ddb55f74cc"
 dependencies = [
  "serde",
  "serde_json",
@@ -2140,9 +2140,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-cipher-core"
-version = "1.4.9"
+version = "1.4.10"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "151ea4842316096a128b3bc9f14b8c633cc0170952ed083bf497f1469118cfcf"
+checksum = "4ab145c4190edf296f32274189b9c6c226c9773bacf56f5a7b5a3b28f67d6db6"
 dependencies = [
  "base64",
  "hex",
@@ -2167,9 +2167,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-crypto"
-version = "0.1.3"
+version = "0.1.4"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "999e3aa8bfd9d76d57580e96fd6722d2cdba51c74f6198b7ea618dc70a4f1f1c"
+checksum = "45c6685b945af28ff305e987f17f68e9f7ba4d2f97cc5a6f4bd2c0dd85245d40"
 dependencies = [
  "argon2",
  "base62",
@@ -2191,9 +2191,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-keep-client"
-version = "1.4.7"
+version = "1.4.8"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "2e74fec8959b6dc4b91c6fc1a202008a7ead354b04b05864e2be012a6bfa3a53"
+checksum = "72d63c97ad5cba32a42bb88b8f1c0f589d08b336a8413501ac6d6f9761f1f246"
 dependencies = [
  "serde",
  "serde_json",
@@ -2335,9 +2335,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-storage"
-version = "0.2.15"
+version = "0.2.17"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "c9b08b0124790519fa8679e6e56feaa5d6d791d4373f2045fa07e78ae94dc671"
+checksum = "37eac376af24371a09cfb5948ab25ff60d5018290b07278818001aa39c54a728"
 dependencies = [
  "crc32fast",
  "dashmap",
@@ -2360,9 +2360,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-store"
-version = "0.1.2"
+version = "0.1.3"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "0694dcb4e2f2736fd129dcffda5f6c95e6e442cb5511276490808a17b9591e33"
+checksum = "c402c01f3aaaeccb235afd2f4c8a565c6f375f6db9dc28597435eb4d0f9bcd71"
 dependencies = [
  "serde",
  "serde_json",
@@ -2388,9 +2388,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-veil-client"
-version = "1.4.0"
+version = "1.4.2"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "b2b89e4bbf992688f80c1c45b0af1b315c92b9bc4200490caadfafaed36386f4"
+checksum = "5e4d1905674a9c905dc9c69ffc373fe61056fa73f14deb52d990a97060e85d5d"
 dependencies = [
  "serde",
  "serde_json",
@@ -2400,9 +2400,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-veil-core"
-version = "1.4.0"
+version = "1.4.2"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "2c4c19f826c8c897e120d9c87f71d553773a31373cf0e50eb00aff9e48fc15aa"
+checksum = "c465aaf0f280881d0be88e92921b396996315751e1a56034da337547131ed696"
 dependencies = [
  "serde",
  "serde_json",
@@ -2644,9 +2644,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.51.0"
+version = "1.51.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bd1c4c0fc4a7ab90fc15ef6daaa3ec3b893f004f915f2392557ed23237820cd"
+checksum = "f66bf9585cda4b724d3e78ab34b73fb2bbaba9011b9bfdf69dc836382ea13b8c"
 dependencies = [
  "bytes",
  "libc",
