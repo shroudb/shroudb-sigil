@@ -894,6 +894,110 @@ async fn acl_jwks_is_public_even_with_auth() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// PII decrypt gated behind platform ACL
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn platform_token_decrypts_pii_non_platform_gets_redacted() {
+    let cipher = match TestCipherServer::start().await {
+        Some(c) => c,
+        None => {
+            eprintln!("skipping: cipher binary not found");
+            return;
+        }
+    };
+    cipher.create_keyring("sigil-pii", "aes-256-gcm").await;
+
+    let server = TestServer::start_with_config(TestServerConfig {
+        cipher: Some(TestCipherConfig {
+            addr: cipher.tcp_addr.clone(),
+            keyring: "sigil-pii".to_string(),
+        }),
+        tokens: vec![
+            TestToken {
+                raw: "admin-token".to_string(),
+                tenant: "t1".to_string(),
+                actor: "admin".to_string(),
+                platform: true,
+                grants: vec![],
+            },
+            TestToken {
+                raw: "app-token".to_string(),
+                tenant: "t1".to_string(),
+                actor: "app".to_string(),
+                platform: false,
+                grants: vec![TestGrant {
+                    namespace: "sigil.acl-pii.*".to_string(),
+                    scopes: vec!["read".to_string(), "write".to_string()],
+                }],
+            },
+        ],
+        ..Default::default()
+    })
+    .await
+    .expect("server failed to start");
+
+    let client = reqwest::Client::new();
+
+    // Admin registers schema + creates user with PII
+    let resp = client
+        .post(server.http_url("/sigil/schemas"))
+        .header("Authorization", "Bearer admin-token")
+        .json(&serde_json::json!({
+            "name": "acl-pii",
+            "fields": [
+                {"name": "email", "field_type": "string", "annotations": {"pii": true}},
+                {"name": "org", "field_type": "string", "annotations": {"index": true}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    let resp = client
+        .post(server.http_url("/sigil/acl-pii/users"))
+        .header("Authorization", "Bearer admin-token")
+        .json(&serde_json::json!({
+            "fields": {"entity_id": "alice", "email": "alice@example.com", "org": "acme"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Non-platform token: PII is redacted
+    let resp = client
+        .get(server.http_url("/sigil/acl-pii/users/alice"))
+        .header("Authorization", "Bearer app-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let user: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        user["fields"]["email"], "[encrypted]",
+        "non-platform token should see redacted PII"
+    );
+    assert_eq!(user["fields"]["org"], "acme");
+
+    // Platform token: PII is decrypted
+    let resp = client
+        .get(server.http_url("/sigil/acl-pii/users/alice"))
+        .header("Authorization", "Bearer admin-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let user: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        user["fields"]["email"], "alice@example.com",
+        "platform token should see decrypted PII"
+    );
+    assert_eq!(user["fields"]["org"], "acme");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Cipher integration: PII field encryption roundtrip
 // ═══════════════════════════════════════════════════════════════════════
 
