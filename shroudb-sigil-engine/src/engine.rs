@@ -131,10 +131,11 @@ impl<S: Store> SigilEngine<S> {
         &self,
         schema_name: &str,
         entity_id: &str,
+        decrypt: bool,
     ) -> Result<EnvelopeRecord, SigilError> {
         let schema = self.schemas.get(schema_name).await?;
         self.coordinator
-            .get_envelope(&schema, entity_id, true)
+            .get_envelope(&schema, entity_id, decrypt)
             .await
     }
 
@@ -210,8 +211,9 @@ impl<S: Store> SigilEngine<S> {
         &self,
         schema_name: &str,
         user_id: &str,
+        decrypt: bool,
     ) -> Result<EnvelopeRecord, SigilError> {
-        self.envelope_get(schema_name, user_id).await
+        self.envelope_get(schema_name, user_id, decrypt).await
     }
 
     pub async fn user_update(

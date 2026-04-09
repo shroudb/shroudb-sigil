@@ -88,7 +88,9 @@ pub async fn dispatch<S: Store>(
         },
 
         SigilCommand::EnvelopeGet { schema, entity_id } => {
-            match engine.envelope_get(&schema, &entity_id).await {
+            // Decrypt requires admin scope — regular Read callers get redacted PII
+            let decrypt = auth_context.is_some_and(|ctx| ctx.is_platform);
+            match engine.envelope_get(&schema, &entity_id, decrypt).await {
                 Ok(record) => SigilResponse::ok(serde_json::json!({
                     "entity_id": record.entity_id,
                     "fields": record.fields,
@@ -181,7 +183,8 @@ pub async fn dispatch<S: Store>(
         },
 
         SigilCommand::UserGet { schema, user_id } => {
-            match engine.user_get(&schema, &user_id).await {
+            let decrypt = auth_context.is_some_and(|ctx| ctx.is_platform);
+            match engine.user_get(&schema, &user_id, decrypt).await {
                 Ok(record) => SigilResponse::ok(serde_json::json!({
                     "entity_id": record.entity_id,
                     "fields": record.fields,
