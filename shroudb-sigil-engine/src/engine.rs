@@ -5,7 +5,7 @@ use shroudb_crypto::JwtAlgorithm;
 use shroudb_sigil_core::credential::PasswordPolicy;
 use shroudb_sigil_core::error::SigilError;
 use shroudb_sigil_core::record::EnvelopeRecord;
-use shroudb_sigil_core::schema::Schema;
+use shroudb_sigil_core::schema::{FieldDef, Schema};
 use shroudb_sigil_core::session::TokenPair;
 use shroudb_store::Store;
 
@@ -99,6 +99,15 @@ impl<S: Store> SigilEngine<S> {
 
     pub async fn schema_list(&self) -> Result<Vec<String>, SigilError> {
         self.schemas.list().await
+    }
+
+    pub async fn schema_alter(
+        &self,
+        name: &str,
+        add_fields: Vec<FieldDef>,
+        remove_fields: Vec<String>,
+    ) -> Result<Schema, SigilError> {
+        self.schemas.alter(name, add_fields, remove_fields).await
     }
 
     // ── Generic envelope operations ─────────────────────────────────

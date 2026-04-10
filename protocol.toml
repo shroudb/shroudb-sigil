@@ -105,6 +105,18 @@ description = "List all registered schema names"
 parameters = []
 response = { names = "array<string>" }
 
+[commands.SCHEMA_ALTER]
+syntax = "SCHEMA ALTER <name> ADD <field_json> | SCHEMA ALTER <name> REMOVE <field_name>"
+description = "Add or remove fields from a schema, producing a new version. Added fields are optional (required=false). Existing envelopes remain readable."
+parameters = [
+    { name = "name", type = "string", required = true, description = "Schema name" },
+    { name = "action", type = "string", required = true, description = "ADD or REMOVE" },
+    { name = "field_json", type = "json", required = false, description = "FieldDef JSON (for ADD)" },
+    { name = "field_name", type = "string", required = false, description = "Field name to remove (for REMOVE)" },
+]
+response = { name = "string", version = "integer", fields = "integer" }
+http = { method = "PATCH", path = "/sigil/schemas/{name}" }
+
 # ── Envelope (generic) ───────────────────────────────────────────────────────
 
 [commands.ENVELOPE_CREATE]
@@ -406,6 +418,7 @@ http = { method = "GET", path = "/sigil/health" }
 description = "A registered credential envelope schema"
 fields = [
     { name = "name", type = "string", description = "Schema name" },
+    { name = "version", type = "integer", default = 1, description = "Schema version (increments on ALTER)" },
     { name = "fields", type = "array<FieldDef>", description = "Field definitions" },
 ]
 
@@ -415,6 +428,7 @@ fields = [
     { name = "name", type = "string" },
     { name = "field_type", type = "string", description = "string | integer | boolean | bytes" },
     { name = "annotations", type = "FieldAnnotations" },
+    { name = "required", type = "boolean", default = true, description = "Whether this field is required on envelope creation. Fields added via ALTER are optional." },
 ]
 
 [types.FieldAnnotations]

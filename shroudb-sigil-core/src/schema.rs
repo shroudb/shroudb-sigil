@@ -2,6 +2,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SigilError;
 
+fn default_version() -> u32 {
+    1
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// A registered credential envelope schema.
 ///
 /// Defines the shape of a credential record and the cryptographic treatment
@@ -11,6 +19,9 @@ pub struct Schema {
     /// Schema name (used as namespace prefix: `sigil.{name}.*`).
     #[serde(default)]
     pub name: String,
+    /// Schema version. Starts at 1, increments on each ALTER.
+    #[serde(default = "default_version")]
+    pub version: u32,
     /// Field definitions with type and annotation metadata.
     pub fields: Vec<FieldDef>,
 }
@@ -94,6 +105,11 @@ pub struct FieldDef {
     /// Cryptographic treatment annotations.
     #[serde(default)]
     pub annotations: FieldAnnotations,
+    /// Whether this field is required on envelope creation. Fields added via
+    /// ALTER are optional (required=false). Defaults to true for backward
+    /// compatibility with schemas registered before schema evolution.
+    #[serde(default = "default_true")]
+    pub required: bool,
 }
 
 impl FieldDef {
@@ -195,12 +211,14 @@ mod tests {
             name: name.to_string(),
             field_type: FieldType::String,
             annotations,
+            required: true,
         }
     }
 
     fn schema(name: &str, fields: Vec<FieldDef>) -> Schema {
         Schema {
             name: name.to_string(),
+            version: 1,
             fields,
         }
     }
@@ -318,8 +336,34 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let parsed: Schema = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, "myapp");
+        assert_eq!(parsed.version, 1);
         assert_eq!(parsed.fields.len(), 2);
         assert!(parsed.fields[0].annotations.searchable);
+        assert!(parsed.fields[0].required);
         assert!(parsed.fields[1].annotations.credential);
+    }
+
+    #[test]
+    fn schema_version_defaults_on_deserialize() {
+        // Simulate a schema stored before schema evolution (no version field)
+        let json = r#"{"name":"legacy","fields":[{"name":"f","field_type":"string"}]}"#;
+        let parsed: Schema = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.version, 1);
+        assert!(parsed.fields[0].required);
+    }
+
+    #[test]
+    fn optional_field_valid() {
+        let mut s = schema("myapp", vec![field("email", |a| a.pii = true)]);
+        s.fields.push(FieldDef {
+            name: "phone".to_string(),
+            field_type: FieldType::String,
+            annotations: FieldAnnotations {
+                pii: true,
+                ..Default::default()
+            },
+            required: false,
+        });
+        assert!(s.validate().is_ok());
     }
 }

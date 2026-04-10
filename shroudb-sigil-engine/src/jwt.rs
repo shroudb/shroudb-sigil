@@ -234,6 +234,7 @@ mod tests {
         registry
             .register(Schema {
                 name: "myapp".to_string(),
+                version: 1,
                 fields: vec![FieldDef {
                     name: "password".to_string(),
                     field_type: FieldType::String,
@@ -241,6 +242,7 @@ mod tests {
                         credential: true,
                         ..Default::default()
                     },
+                    required: true,
                 }],
             })
             .await

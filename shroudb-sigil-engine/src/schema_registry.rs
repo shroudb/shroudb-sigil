@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use shroudb_sigil_core::error::SigilError;
-use shroudb_sigil_core::schema::Schema;
+use shroudb_sigil_core::schema::{FieldDef, Schema};
 use shroudb_store::{NamespaceConfig, Store, StoreError};
 
 /// Namespace for storing schema definitions.
@@ -35,7 +35,8 @@ impl<S: Store> SchemaRegistry<S> {
     }
 
     /// Register a new schema. Validates, stores, and creates namespaces.
-    pub async fn register(&self, schema: Schema) -> Result<u64, SigilError> {
+    pub async fn register(&self, mut schema: Schema) -> Result<u64, SigilError> {
+        schema.version = 1;
         schema.validate()?;
 
         // Check for duplicates
@@ -90,6 +91,70 @@ impl<S: Store> SchemaRegistry<S> {
         Ok(names)
     }
 
+    /// Alter a schema by adding and/or removing fields, producing a new version.
+    ///
+    /// Rules:
+    /// - Added fields are forced to `required: false` (optional).
+    /// - Removed fields are dropped from the schema definition.
+    /// - Duplicate field names when adding are rejected.
+    /// - Removing a non-existent field is rejected.
+    /// - Field type or annotation changes are not supported (would break existing data).
+    pub async fn alter(
+        &self,
+        name: &str,
+        add_fields: Vec<FieldDef>,
+        remove_fields: Vec<String>,
+    ) -> Result<Schema, SigilError> {
+        let mut schema = self.get(name).await?;
+
+        // Validate removals: every field to remove must exist
+        for field_name in &remove_fields {
+            if !schema.fields.iter().any(|f| f.name == *field_name) {
+                return Err(SigilError::SchemaValidation(format!(
+                    "cannot remove field '{}': not in schema",
+                    field_name
+                )));
+            }
+        }
+
+        // Validate additions: no duplicate field names
+        let existing_names: std::collections::HashSet<&str> =
+            schema.fields.iter().map(|f| f.name.as_str()).collect();
+        for field_def in &add_fields {
+            field_def.validate()?;
+            if existing_names.contains(field_def.name.as_str()) {
+                return Err(SigilError::SchemaValidation(format!(
+                    "cannot add field '{}': already exists in schema",
+                    field_def.name
+                )));
+            }
+        }
+
+        // Remove fields
+        schema.fields.retain(|f| !remove_fields.contains(&f.name));
+
+        // Add fields (forced to optional)
+        for mut field_def in add_fields {
+            field_def.required = false;
+            schema.fields.push(field_def);
+        }
+
+        // Increment version
+        schema.version += 1;
+
+        // Validate the resulting schema is still well-formed
+        schema.validate()?;
+
+        // Save updated schema
+        let value = serde_json::to_vec(&schema).map_err(|e| SigilError::Internal(e.to_string()))?;
+        self.store
+            .put(SCHEMAS_NAMESPACE, schema.name.as_bytes(), &value, None)
+            .await
+            .map_err(|e| SigilError::Store(e.to_string()))?;
+
+        Ok(schema)
+    }
+
     /// Create the required namespaces for a schema.
     async fn create_schema_namespaces(&self, schema_name: &str) -> Result<(), SigilError> {
         let namespaces = [
@@ -126,6 +191,7 @@ pub(crate) mod tests {
     fn test_schema(name: &str) -> Schema {
         Schema {
             name: name.to_string(),
+            version: 1,
             fields: vec![
                 FieldDef {
                     name: "email".to_string(),
@@ -134,6 +200,7 @@ pub(crate) mod tests {
                         pii: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "password".to_string(),
@@ -142,6 +209,7 @@ pub(crate) mod tests {
                         credential: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "org_id".to_string(),
@@ -150,6 +218,7 @@ pub(crate) mod tests {
                         index: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
             ],
         }
@@ -241,8 +310,119 @@ pub(crate) mod tests {
 
         let invalid = Schema {
             name: "".to_string(),
+            version: 1,
             fields: vec![],
         };
         assert!(registry.register(invalid).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn alter_adds_optional_field() {
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store);
+        registry.init().await.unwrap();
+
+        registry.register(test_schema("myapp")).await.unwrap();
+
+        let new_field = FieldDef {
+            name: "phone".to_string(),
+            field_type: FieldType::String,
+            annotations: FieldAnnotations {
+                pii: true,
+                ..Default::default()
+            },
+            required: true, // will be forced to false by alter()
+        };
+
+        let schema = registry
+            .alter("myapp", vec![new_field], vec![])
+            .await
+            .unwrap();
+
+        assert_eq!(schema.version, 2);
+        assert_eq!(schema.fields.len(), 4);
+        let phone_field = schema.fields.iter().find(|f| f.name == "phone").unwrap();
+        assert!(!phone_field.required, "added fields must be optional");
+    }
+
+    #[tokio::test]
+    async fn alter_removes_field() {
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store);
+        registry.init().await.unwrap();
+
+        registry.register(test_schema("myapp")).await.unwrap();
+
+        let schema = registry
+            .alter("myapp", vec![], vec!["org_id".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(schema.version, 2);
+        assert_eq!(schema.fields.len(), 2);
+        assert!(schema.fields.iter().all(|f| f.name != "org_id"));
+    }
+
+    #[tokio::test]
+    async fn alter_rejects_duplicate_field_name() {
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store);
+        registry.init().await.unwrap();
+
+        registry.register(test_schema("myapp")).await.unwrap();
+
+        let dup_field = FieldDef {
+            name: "email".to_string(),
+            field_type: FieldType::String,
+            annotations: FieldAnnotations::default(),
+            required: true,
+        };
+
+        let err = registry
+            .alter("myapp", vec![dup_field], vec![])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn alter_rejects_removing_nonexistent_field() {
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store);
+        registry.init().await.unwrap();
+
+        registry.register(test_schema("myapp")).await.unwrap();
+
+        let err = registry
+            .alter("myapp", vec![], vec!["nonexistent".to_string()])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not in schema"));
+    }
+
+    #[tokio::test]
+    async fn alter_persists_to_store() {
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store);
+        registry.init().await.unwrap();
+
+        registry.register(test_schema("myapp")).await.unwrap();
+
+        let new_field = FieldDef {
+            name: "phone".to_string(),
+            field_type: FieldType::String,
+            annotations: FieldAnnotations::default(),
+            required: false,
+        };
+
+        registry
+            .alter("myapp", vec![new_field], vec![])
+            .await
+            .unwrap();
+
+        // Re-fetch from store to verify persistence
+        let fetched = registry.get("myapp").await.unwrap();
+        assert_eq!(fetched.version, 2);
+        assert_eq!(fetched.fields.len(), 4);
     }
 }

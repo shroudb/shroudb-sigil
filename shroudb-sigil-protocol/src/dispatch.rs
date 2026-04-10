@@ -44,6 +44,20 @@ pub async fn dispatch<S: Store>(
             Err(e) => SigilResponse::error(e.to_string()),
         },
 
+        SigilCommand::SchemaAlter {
+            name,
+            add_fields,
+            remove_fields,
+        } => match engine.schema_alter(&name, add_fields, remove_fields).await {
+            Ok(schema) => SigilResponse::ok(serde_json::json!({
+                "status": "ok",
+                "name": schema.name,
+                "version": schema.version,
+                "fields": schema.fields.len(),
+            })),
+            Err(e) => SigilResponse::error(e.to_string()),
+        },
+
         // ── Envelope (generic) ─────────────────────────────────────
         SigilCommand::EnvelopeCreate {
             schema,
@@ -554,5 +568,137 @@ mod tests {
         let cmd = parse_command(&["USER", "VERIFY", "myapp", "user1", "wrongpassword"]).unwrap();
         let resp = dispatch(&engine, cmd, None).await;
         assert!(!resp.is_ok());
+    }
+
+    #[tokio::test]
+    async fn schema_alter_add_field_via_dispatch() {
+        let engine = setup().await;
+
+        // Register schema
+        let cmd = parse_command(&[
+            "SCHEMA",
+            "REGISTER",
+            "evolve",
+            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok());
+
+        // Alter: add optional field
+        let cmd = parse_command(&[
+            "SCHEMA",
+            "ALTER",
+            "evolve",
+            "ADD",
+            r#"{"name":"phone","field_type":"string","annotations":{"pii":false}}"#,
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok(), "schema alter failed: {resp:?}");
+
+        // Get schema and verify version incremented
+        let cmd = parse_command(&["SCHEMA", "GET", "evolve"]).unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok());
+    }
+
+    #[tokio::test]
+    async fn create_envelope_with_optional_field_omitted() {
+        let engine = setup().await;
+
+        // Register schema
+        let cmd = parse_command(&[
+            "SCHEMA",
+            "REGISTER",
+            "optapp",
+            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        // ALTER: add optional field
+        let cmd = parse_command(&[
+            "SCHEMA",
+            "ALTER",
+            "optapp",
+            "ADD",
+            r#"{"name":"phone","field_type":"string","annotations":{}}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        // Create envelope without the optional phone field — should succeed
+        let cmd = parse_command(&[
+            "ENVELOPE",
+            "CREATE",
+            "optapp",
+            "user1",
+            r#"{"password":"correcthorse","org":"acme"}"#,
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(
+            resp.is_ok(),
+            "create without optional field failed: {resp:?}"
+        );
+
+        // Create envelope WITH the optional phone field — should also succeed
+        let cmd = parse_command(&[
+            "ENVELOPE",
+            "CREATE",
+            "optapp",
+            "user2",
+            r#"{"password":"correcthorse","org":"acme","phone":"555-1234"}"#,
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok(), "create with optional field failed: {resp:?}");
+    }
+
+    #[tokio::test]
+    async fn existing_envelope_readable_after_schema_alter() {
+        let engine = setup().await;
+
+        // Register schema
+        let cmd = parse_command(&[
+            "SCHEMA",
+            "REGISTER",
+            "compat",
+            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        // Create envelope with v1 schema
+        let cmd = parse_command(&[
+            "ENVELOPE",
+            "CREATE",
+            "compat",
+            "user1",
+            r#"{"password":"correcthorse","org":"acme"}"#,
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok(), "create envelope failed: {resp:?}");
+
+        // ALTER: add optional field
+        let cmd = parse_command(&[
+            "SCHEMA",
+            "ALTER",
+            "compat",
+            "ADD",
+            r#"{"name":"phone","field_type":"string","annotations":{}}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        // Read the old envelope — should still work (backward compat)
+        let cmd = parse_command(&["ENVELOPE", "GET", "compat", "user1"]).unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(
+            resp.is_ok(),
+            "reading old envelope after ALTER failed: {resp:?}"
+        );
     }
 }

@@ -162,9 +162,9 @@ impl<S: Store> WriteCoordinator<S> {
         fields: &HashMap<String, serde_json::Value>,
         import_mode: bool,
     ) -> Result<EnvelopeRecord, SigilError> {
-        // Validate all required fields are present
+        // Validate all required fields are present (optional fields can be omitted)
         for field_def in &schema.fields {
-            if !fields.contains_key(&field_def.name) {
+            if field_def.required && !fields.contains_key(&field_def.name) {
                 return Err(SigilError::MissingField(field_def.name.clone()));
             }
         }
@@ -188,7 +188,10 @@ impl<S: Store> WriteCoordinator<S> {
 
         // Process each field according to its treatment
         for field_def in &schema.fields {
-            let value = &fields[&field_def.name];
+            let Some(value) = fields.get(&field_def.name) else {
+                // Optional field not provided — skip it
+                continue;
+            };
             let treatment = route_field(&field_def.annotations);
 
             let result = self
@@ -236,6 +239,7 @@ impl<S: Store> WriteCoordinator<S> {
         let now = now_secs();
         let record = EnvelopeRecord {
             entity_id: entity_id.to_string(),
+            schema_version: schema.version,
             fields: record_fields,
             created_at: now,
             updated_at: now,
@@ -962,6 +966,7 @@ mod tests {
     fn test_schema() -> Schema {
         Schema {
             name: "myapp".to_string(),
+            version: 1,
             fields: vec![
                 FieldDef {
                     name: "password".to_string(),
@@ -970,6 +975,7 @@ mod tests {
                         credential: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "org_id".to_string(),
@@ -978,11 +984,13 @@ mod tests {
                         index: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "display_name".to_string(),
                     field_type: FieldType::String,
                     annotations: FieldAnnotations::default(),
+                    required: true,
                 },
             ],
         }
@@ -1093,6 +1101,67 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("org_id"));
+    }
+
+    #[tokio::test]
+    async fn optional_field_omitted_succeeds() {
+        let (_store, coord) = setup().await;
+        let mut schema = test_schema();
+        // Add an optional field to the schema
+        schema.fields.push(FieldDef {
+            name: "phone".to_string(),
+            field_type: FieldType::String,
+            annotations: FieldAnnotations::default(),
+            required: false,
+        });
+
+        // Create envelope without the optional phone field
+        let record = coord
+            .create_envelope(&schema, "user1", &entity_fields())
+            .await
+            .unwrap();
+
+        assert_eq!(record.entity_id, "user1");
+        // phone should not be in the record since it wasn't provided
+        assert!(!record.fields.contains_key("phone"));
+        // Required fields are still present
+        assert_eq!(record.fields["org_id"], "acme-corp");
+    }
+
+    #[tokio::test]
+    async fn optional_field_provided_is_stored() {
+        let (_store, coord) = setup().await;
+        let mut schema = test_schema();
+        schema.fields.push(FieldDef {
+            name: "phone".to_string(),
+            field_type: FieldType::String,
+            annotations: FieldAnnotations::default(),
+            required: false,
+        });
+
+        let mut fields = entity_fields();
+        fields.insert("phone".to_string(), serde_json::json!("555-1234"));
+
+        let record = coord
+            .create_envelope(&schema, "user1", &fields)
+            .await
+            .unwrap();
+
+        assert_eq!(record.fields["phone"], "555-1234");
+    }
+
+    #[tokio::test]
+    async fn envelope_tracks_schema_version() {
+        let (_store, coord) = setup().await;
+        let mut schema = test_schema();
+        schema.version = 3; // Simulate a schema at version 3
+
+        let record = coord
+            .create_envelope(&schema, "user1", &entity_fields())
+            .await
+            .unwrap();
+
+        assert_eq!(record.schema_version, 3);
     }
 
     #[tokio::test]
@@ -1226,6 +1295,7 @@ mod tests {
 
         let schema = Schema {
             name: "del-cleanup".to_string(),
+            version: 1,
             fields: vec![FieldDef {
                 name: "email".to_string(),
                 field_type: FieldType::String,
@@ -1234,6 +1304,7 @@ mod tests {
                     searchable: true,
                     ..Default::default()
                 },
+                required: true,
             }],
         };
         registry.register(schema.clone()).await.unwrap();
@@ -1288,6 +1359,7 @@ mod tests {
 
         let schema = Schema {
             name: "pii-app".to_string(),
+            version: 1,
             fields: vec![FieldDef {
                 name: "email".to_string(),
                 field_type: FieldType::String,
@@ -1295,6 +1367,7 @@ mod tests {
                     pii: true,
                     ..Default::default()
                 },
+                required: true,
             }],
         };
         registry.register(schema.clone()).await.unwrap();
@@ -1370,6 +1443,7 @@ mod tests {
 
         let schema = Schema {
             name: "keep-rollback".to_string(),
+            version: 1,
             fields: vec![
                 FieldDef {
                     name: "api_key".to_string(),
@@ -1378,6 +1452,7 @@ mod tests {
                         secret: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "email".to_string(),
@@ -1386,6 +1461,7 @@ mod tests {
                         pii: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
             ],
         };
@@ -1436,6 +1512,7 @@ mod tests {
 
         let schema = Schema {
             name: "multi-rollback".to_string(),
+            version: 1,
             fields: vec![
                 FieldDef {
                     name: "password".to_string(),
@@ -1444,6 +1521,7 @@ mod tests {
                         credential: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "api_key".to_string(),
@@ -1452,6 +1530,7 @@ mod tests {
                         secret: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "ssn".to_string(),
@@ -1460,6 +1539,7 @@ mod tests {
                         pii: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
             ],
         };
@@ -1604,6 +1684,7 @@ mod tests {
 
         let schema = Schema {
             name: "veil-rollback".to_string(),
+            version: 1,
             fields: vec![
                 FieldDef {
                     name: "email".to_string(),
@@ -1613,6 +1694,7 @@ mod tests {
                         searchable: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "api_key".to_string(),
@@ -1621,6 +1703,7 @@ mod tests {
                         secret: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
             ],
         };
@@ -1683,6 +1766,7 @@ mod tests {
 
         let schema = Schema {
             name: "full-rollback".to_string(),
+            version: 1,
             fields: vec![
                 FieldDef {
                     name: "password".to_string(),
@@ -1691,6 +1775,7 @@ mod tests {
                         credential: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "api_key".to_string(),
@@ -1699,6 +1784,7 @@ mod tests {
                         secret: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "email".to_string(),
@@ -1708,6 +1794,7 @@ mod tests {
                         searchable: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
             ],
         };
@@ -1769,6 +1856,7 @@ mod tests {
         // Create a schema with a credential field + a PII field (no cipher available)
         let schema = Schema {
             name: "rollback-test".to_string(),
+            version: 1,
             fields: vec![
                 FieldDef {
                     name: "password".to_string(),
@@ -1777,6 +1865,7 @@ mod tests {
                         credential: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "email".to_string(),
@@ -1785,6 +1874,7 @@ mod tests {
                         pii: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
             ],
         };
@@ -1843,6 +1933,7 @@ mod tests {
 
         let schema = Schema {
             name: "audit-test".to_string(),
+            version: 1,
             fields: vec![FieldDef {
                 name: "org_id".to_string(),
                 field_type: FieldType::String,
@@ -1850,6 +1941,7 @@ mod tests {
                     index: true,
                     ..Default::default()
                 },
+                required: true,
             }],
         };
         registry.register(schema.clone()).await.unwrap();
@@ -1892,10 +1984,12 @@ mod tests {
 
         let schema = Schema {
             name: "audit-del".to_string(),
+            version: 1,
             fields: vec![FieldDef {
                 name: "name".to_string(),
                 field_type: FieldType::String,
                 annotations: FieldAnnotations::default(),
+                required: true,
             }],
         };
         registry.register(schema.clone()).await.unwrap();
@@ -2014,6 +2108,7 @@ mod tests {
 
         let schema = Schema {
             name: "concurrency-test".to_string(),
+            version: 1,
             fields: vec![
                 FieldDef {
                     name: "api_key".to_string(),
@@ -2022,6 +2117,7 @@ mod tests {
                         secret: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "org".to_string(),
@@ -2030,6 +2126,7 @@ mod tests {
                         index: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
             ],
         };
@@ -2127,6 +2224,7 @@ mod tests {
 
         let schema = Schema {
             name: "orphan-test".to_string(),
+            version: 1,
             fields: vec![
                 FieldDef {
                     name: "api_key".to_string(),
@@ -2135,6 +2233,7 @@ mod tests {
                         secret: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "email".to_string(),
@@ -2143,6 +2242,7 @@ mod tests {
                         pii: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
             ],
         };
@@ -2211,6 +2311,7 @@ mod tests {
 
         let schema = Schema {
             name: "dup-race".to_string(),
+            version: 1,
             fields: vec![
                 FieldDef {
                     name: "org_id".to_string(),
@@ -2219,11 +2320,13 @@ mod tests {
                         index: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "name".to_string(),
                     field_type: FieldType::String,
                     annotations: FieldAnnotations::default(),
+                    required: true,
                 },
             ],
         };
@@ -2328,6 +2431,7 @@ mod tests {
     fn pii_schema() -> Schema {
         Schema {
             name: "pii-app".to_string(),
+            version: 1,
             fields: vec![
                 FieldDef {
                     name: "email".to_string(),
@@ -2336,6 +2440,7 @@ mod tests {
                         pii: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
                 FieldDef {
                     name: "org_id".to_string(),
@@ -2344,6 +2449,7 @@ mod tests {
                         index: true,
                         ..Default::default()
                     },
+                    required: true,
                 },
             ],
         }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use shroudb_acl::{AclRequirement, Scope};
-use shroudb_sigil_core::schema::Schema;
+use shroudb_sigil_core::schema::{FieldDef, Schema};
 
 /// Parsed Sigil wire protocol command.
 #[derive(Debug)]
@@ -19,6 +19,11 @@ pub enum SigilCommand {
         name: String,
     },
     SchemaList,
+    SchemaAlter {
+        name: String,
+        add_fields: Vec<FieldDef>,
+        remove_fields: Vec<String>,
+    },
 
     // ── Generic envelope commands ───────────────────────────────────
     EnvelopeCreate {
@@ -187,7 +192,9 @@ impl SigilCommand {
             SigilCommand::SchemaGet { .. } | SigilCommand::SchemaList => AclRequirement::None,
 
             // Schema mutation is a structural change → admin
-            SigilCommand::SchemaRegister { .. } => AclRequirement::Admin,
+            SigilCommand::SchemaRegister { .. } | SigilCommand::SchemaAlter { .. } => {
+                AclRequirement::Admin
+            }
 
             // Read operations
             SigilCommand::EnvelopeGet { schema, .. }
@@ -284,6 +291,35 @@ fn parse_schema(args: &[&str]) -> Result<SigilCommand, String> {
             })
         }
         "LIST" => Ok(SigilCommand::SchemaList),
+        "ALTER" => {
+            if args.len() < 5 {
+                return Err(
+                    "SCHEMA ALTER <name> ADD <field_json> | SCHEMA ALTER <name> REMOVE <field_name>"
+                        .into(),
+                );
+            }
+            let name = args[2].to_string();
+            let sub_action = args[3].to_uppercase();
+            match sub_action.as_str() {
+                "ADD" => {
+                    let field: FieldDef = serde_json::from_str(args[4])
+                        .map_err(|e| format!("invalid field JSON: {e}"))?;
+                    Ok(SigilCommand::SchemaAlter {
+                        name,
+                        add_fields: vec![field],
+                        remove_fields: vec![],
+                    })
+                }
+                "REMOVE" => Ok(SigilCommand::SchemaAlter {
+                    name,
+                    add_fields: vec![],
+                    remove_fields: vec![args[4].to_string()],
+                }),
+                _ => Err(format!(
+                    "unknown SCHEMA ALTER action: {sub_action} (expected ADD or REMOVE)"
+                )),
+            }
+        }
         sub => Err(format!("unknown SCHEMA subcommand: {sub}")),
     }
 }
@@ -773,6 +809,38 @@ mod tests {
     fn parse_health() {
         let cmd = parse_command(&["HEALTH"]).unwrap();
         assert!(matches!(cmd, SigilCommand::Health));
+    }
+
+    #[test]
+    fn parse_schema_alter_add() {
+        let args = vec![
+            "SCHEMA",
+            "ALTER",
+            "myapp",
+            "ADD",
+            r#"{"name":"phone","field_type":"string","annotations":{"pii":true}}"#,
+        ];
+        let cmd = parse_command(&args).unwrap();
+        assert!(
+            matches!(&cmd, SigilCommand::SchemaAlter { name, add_fields, remove_fields }
+                if name == "myapp" && add_fields.len() == 1 && remove_fields.is_empty())
+        );
+    }
+
+    #[test]
+    fn parse_schema_alter_remove() {
+        let args = vec!["SCHEMA", "ALTER", "myapp", "REMOVE", "phone"];
+        let cmd = parse_command(&args).unwrap();
+        assert!(
+            matches!(&cmd, SigilCommand::SchemaAlter { name, add_fields, remove_fields }
+                if name == "myapp" && add_fields.is_empty() && remove_fields == &["phone".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_schema_alter_missing_args() {
+        let args = vec!["SCHEMA", "ALTER", "myapp"];
+        assert!(parse_command(&args).is_err());
     }
 
     #[test]

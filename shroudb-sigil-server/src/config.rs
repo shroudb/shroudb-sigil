@@ -52,6 +52,7 @@ impl SchemaConfig {
     pub fn to_schema(&self) -> shroudb_sigil_core::schema::Schema {
         shroudb_sigil_core::schema::Schema {
             name: self.name.clone(),
+            version: 1,
             fields: self
                 .fields
                 .iter()
@@ -70,6 +71,7 @@ impl SchemaConfig {
                         secret: f.secret,
                         index: f.index,
                     },
+                    required: true,
                 })
                 .collect(),
         }

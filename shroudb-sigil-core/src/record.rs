@@ -2,6 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+fn default_version() -> u32 {
+    1
+}
+
 /// A stored envelope record.
 ///
 /// Contains non-sensitive field values and metadata. This is the
@@ -10,6 +14,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EnvelopeRecord {
     pub entity_id: String,
+    /// Schema version used when this envelope was created or last updated.
+    #[serde(default = "default_version")]
+    pub schema_version: u32,
     /// Non-sensitive field values (index, inert fields).
     pub fields: HashMap<String, serde_json::Value>,
     pub created_at: u64,
@@ -36,6 +43,7 @@ mod tests {
 
         let record = EnvelopeRecord {
             entity_id: "user:bob".to_string(),
+            schema_version: 1,
             fields,
             created_at: 1690000000,
             updated_at: 1695000000,
@@ -67,6 +75,7 @@ mod tests {
     fn envelope_record_empty_fields_roundtrip() {
         let record = EnvelopeRecord {
             entity_id: "device:sensor-1".to_string(),
+            schema_version: 1,
             fields: HashMap::new(),
             created_at: 1700000000,
             updated_at: 1700000000,
@@ -78,5 +87,13 @@ mod tests {
 
         assert_eq!(parsed.entity_id, "device:sensor-1");
         assert!(parsed.fields.is_empty());
+    }
+
+    #[test]
+    fn schema_version_defaults_on_deserialize() {
+        // Simulate a record stored before schema evolution (no schema_version field)
+        let json = r#"{"entity_id":"user:old","fields":{},"created_at":1690000000,"updated_at":1690000000}"#;
+        let parsed: EnvelopeRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.schema_version, 1);
     }
 }
