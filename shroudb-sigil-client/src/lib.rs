@@ -65,15 +65,24 @@ pub struct SigilClient {
 }
 
 impl SigilClient {
-    /// Connect to a Sigil server.
+    /// Connect directly to a standalone Sigil server.
     pub async fn connect(addr: &str) -> Result<Self, ClientError> {
         let conn = Connection::connect(addr).await?;
         Ok(Self { conn })
     }
 
+    /// Connect to a Sigil engine through a Moat gateway.
+    ///
+    /// Commands are automatically prefixed with `SIGIL` for Moat routing.
+    /// Meta-commands (AUTH, HEALTH, PING) are sent without prefix.
+    pub async fn connect_moat(addr: &str) -> Result<Self, ClientError> {
+        let conn = Connection::connect_moat(addr).await?;
+        Ok(Self { conn })
+    }
+
     /// Health check.
     pub async fn health(&mut self) -> Result<(), ClientError> {
-        let resp = self.command(&["HEALTH"]).await?;
+        let resp = self.meta_command(&["HEALTH"]).await?;
         check_status(&resp)
     }
 
@@ -523,6 +532,10 @@ impl SigilClient {
 
     async fn command(&mut self, args: &[&str]) -> Result<serde_json::Value, ClientError> {
         self.conn.send_command(args).await
+    }
+
+    async fn meta_command(&mut self, args: &[&str]) -> Result<serde_json::Value, ClientError> {
+        self.conn.send_meta_command(args).await
     }
 }
 

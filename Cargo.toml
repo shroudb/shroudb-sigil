@@ -28,6 +28,7 @@ shroudb-sigil-client = { path = "shroudb-sigil-client", version = "1.4.10", regi
 shroudb-store = { version = "0.1.2", registry = "shroudb" }
 shroudb-storage = { version = "0.2.13", registry = "shroudb" }
 shroudb-acl = { version = "0.2.0", registry = "shroudb" }
+shroudb-client-common = { version = "0.2.0", registry = "shroudb" }
 shroudb-cipher-client = { version = "1.0.0", registry = "shroudb" }
 shroudb-crypto = { version = "0.1.1", registry = "shroudb" }
 shroudb-keep-client = { version = "1.0.0", registry = "shroudb" }
