@@ -17,6 +17,7 @@ shroudb-crypto.workspace = true
 shroudb-keep-client.workspace = true
 shroudb-veil-client.workspace = true
 
+deadpool.workspace = true
 argon2.workspace = true
 ring.workspace = true
 tokio.workspace = true

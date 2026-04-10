@@ -86,6 +86,9 @@ pub struct CipherConfig {
     /// Auth token for Cipher server (optional).
     #[serde(default)]
     pub auth_token: Option<String>,
+    /// Connection pool size (default: 8).
+    #[serde(default)]
+    pub pool_size: Option<usize>,
 }
 
 /// Veil engine connection for searchable encrypted field indexing.
@@ -98,6 +101,9 @@ pub struct VeilConfig {
     /// Auth token for Veil server (optional).
     #[serde(default)]
     pub auth_token: Option<String>,
+    /// Connection pool size (default: 8).
+    #[serde(default)]
+    pub pool_size: Option<usize>,
 }
 
 /// Keep engine connection for versioned secret storage.
@@ -108,6 +114,9 @@ pub struct KeepConfig {
     /// Auth token for Keep server (optional).
     #[serde(default)]
     pub auth_token: Option<String>,
+    /// Connection pool size (default: 8).
+    #[serde(default)]
+    pub pool_size: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]

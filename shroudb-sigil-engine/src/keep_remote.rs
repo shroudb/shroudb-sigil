@@ -1,57 +1,90 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use deadpool::managed::{self, Manager, Metrics, RecycleResult};
 use shroudb_keep_client::KeepClient;
 
 use crate::capabilities::KeepOps;
 use shroudb_sigil_core::error::SigilError;
 
-/// KeepOps implementation backed by a remote Keep server via TCP.
-///
-/// Creates a fresh `KeepClient` connection per call to allow concurrent
-/// operations without serializing through a single connection.
-pub struct RemoteKeepOps {
+const DEFAULT_POOL_SIZE: usize = 8;
+
+struct KeepConnManager {
     addr: String,
     auth_token: Option<String>,
 }
 
-impl RemoteKeepOps {
-    /// Connect to a Keep server and verify connectivity.
-    ///
-    /// Establishes an initial connection to validate the address and auth
-    /// token, then stores the parameters for per-request connections.
-    pub async fn connect(addr: &str, auth_token: Option<&str>) -> Result<Self, SigilError> {
-        let mut client = KeepClient::connect(addr)
-            .await
-            .map_err(|e| SigilError::Internal(format!("keep connect failed: {e}")))?;
+impl Manager for KeepConnManager {
+    type Type = KeepClient;
+    type Error = SigilError;
 
-        if let Some(token) = auth_token {
-            client
-                .auth(token)
-                .await
-                .map_err(|e| SigilError::Internal(format!("keep auth failed: {e}")))?;
-        }
-
-        Ok(Self {
-            addr: addr.to_string(),
-            auth_token: auth_token.map(String::from),
-        })
-    }
-
-    /// Create a fresh client connection, authenticating if configured.
-    async fn fresh_client(&self) -> Result<KeepClient, SigilError> {
+    async fn create(&self) -> Result<KeepClient, SigilError> {
         let mut client = KeepClient::connect(&self.addr)
             .await
             .map_err(|e| SigilError::Internal(format!("keep connect failed: {e}")))?;
-
         if let Some(ref token) = self.auth_token {
             client
                 .auth(token)
                 .await
                 .map_err(|e| SigilError::Internal(format!("keep auth failed: {e}")))?;
         }
-
         Ok(client)
+    }
+
+    async fn recycle(
+        &self,
+        _client: &mut KeepClient,
+        _metrics: &Metrics,
+    ) -> RecycleResult<SigilError> {
+        Ok(())
+    }
+}
+
+type KeepPool = managed::Pool<KeepConnManager>;
+
+/// KeepOps implementation backed by a remote Keep server via TCP.
+///
+/// Maintains a connection pool to avoid per-call TCP connect + authenticate overhead.
+pub struct RemoteKeepOps {
+    pool: KeepPool,
+}
+
+impl RemoteKeepOps {
+    /// Connect to a Keep server and verify connectivity.
+    ///
+    /// Establishes an initial connection to validate the address and auth
+    /// token, then builds a pool for subsequent requests.
+    pub async fn connect(
+        addr: &str,
+        auth_token: Option<&str>,
+        pool_size: Option<usize>,
+    ) -> Result<Self, SigilError> {
+        let mut probe = KeepClient::connect(addr)
+            .await
+            .map_err(|e| SigilError::Internal(format!("keep connect failed: {e}")))?;
+        if let Some(token) = auth_token {
+            probe
+                .auth(token)
+                .await
+                .map_err(|e| SigilError::Internal(format!("keep auth failed: {e}")))?;
+        }
+        drop(probe);
+
+        let size = match pool_size {
+            Some(0) | None => DEFAULT_POOL_SIZE,
+            Some(n) => n,
+        };
+
+        let mgr = KeepConnManager {
+            addr: addr.to_string(),
+            auth_token: auth_token.map(String::from),
+        };
+        let pool = KeepPool::builder(mgr)
+            .max_size(size)
+            .build()
+            .map_err(|e| SigilError::Internal(format!("keep pool build failed: {e}")))?;
+
+        Ok(Self { pool })
     }
 }
 
@@ -64,7 +97,11 @@ impl KeepOps for RemoteKeepOps {
         let b64 = base64_encode(value);
         let path = path.to_string();
         Box::pin(async move {
-            let mut client = self.fresh_client().await?;
+            let mut client = self
+                .pool
+                .get()
+                .await
+                .map_err(|e| SigilError::Internal(format!("keep pool get failed: {e}")))?;
             let result = client
                 .put(&path, &b64)
                 .await
@@ -79,7 +116,11 @@ impl KeepOps for RemoteKeepOps {
     ) -> Pin<Box<dyn Future<Output = Result<(), SigilError>> + Send + '_>> {
         let path = path.to_string();
         Box::pin(async move {
-            let mut client = self.fresh_client().await?;
+            let mut client = self
+                .pool
+                .get()
+                .await
+                .map_err(|e| SigilError::Internal(format!("keep pool get failed: {e}")))?;
             client
                 .delete(&path)
                 .await

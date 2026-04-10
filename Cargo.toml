@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.5.7"
+version = "1.6.0"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT OR Apache-2.0"
@@ -70,6 +70,7 @@ metrics-exporter-prometheus = "0.18"
 zeroize = { version = "1", features = ["derive"] }
 
 # Utilities
+deadpool = { version = "0.13", features = ["managed"] }
 anyhow = "1"
 base64 = "0.22"
 thiserror = "2"

@@ -1,18 +1,54 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use deadpool::managed::{self, Manager, Metrics, RecycleResult};
 use shroudb_cipher_client::CipherClient;
 
 use crate::capabilities::CipherOps;
 use shroudb_sigil_core::error::SigilError;
 
-/// CipherOps implementation backed by a remote Cipher server via TCP.
-///
-/// Creates a fresh `CipherClient` connection per call to allow concurrent
-/// operations without serializing through a single connection.
-pub struct RemoteCipherOps {
+const DEFAULT_POOL_SIZE: usize = 8;
+
+struct CipherConnManager {
     addr: String,
     auth_token: Option<String>,
+}
+
+impl Manager for CipherConnManager {
+    type Type = CipherClient;
+    type Error = SigilError;
+
+    async fn create(&self) -> Result<CipherClient, SigilError> {
+        let mut client = CipherClient::connect(&self.addr)
+            .await
+            .map_err(|e| SigilError::Internal(format!("cipher connect failed: {e}")))?;
+        if let Some(ref token) = self.auth_token {
+            client
+                .auth(token)
+                .await
+                .map_err(|e| SigilError::Internal(format!("cipher auth failed: {e}")))?;
+        }
+        Ok(client)
+    }
+
+    async fn recycle(
+        &self,
+        _client: &mut CipherClient,
+        _metrics: &Metrics,
+    ) -> RecycleResult<SigilError> {
+        // CipherClient has no ping/health method — assume the connection is
+        // alive and let the pool create a fresh one if the next operation fails.
+        Ok(())
+    }
+}
+
+type CipherPool = managed::Pool<CipherConnManager>;
+
+/// CipherOps implementation backed by a remote Cipher server via TCP.
+///
+/// Maintains a connection pool to avoid per-call TCP connect + authenticate overhead.
+pub struct RemoteCipherOps {
+    pool: CipherPool,
     keyring: String,
 }
 
@@ -20,44 +56,40 @@ impl RemoteCipherOps {
     /// Connect to a Cipher server and verify connectivity.
     ///
     /// Establishes an initial connection to validate the address and auth
-    /// token, then stores the parameters for per-request connections.
+    /// token, then builds a pool for subsequent requests.
     pub async fn connect(
         addr: &str,
         keyring: String,
         auth_token: Option<&str>,
+        pool_size: Option<usize>,
     ) -> Result<Self, SigilError> {
-        let mut client = CipherClient::connect(addr)
+        // Probe to verify connectivity before building the pool.
+        let mut probe = CipherClient::connect(addr)
             .await
             .map_err(|e| SigilError::Internal(format!("cipher connect failed: {e}")))?;
-
         if let Some(token) = auth_token {
-            client
+            probe
                 .auth(token)
                 .await
                 .map_err(|e| SigilError::Internal(format!("cipher auth failed: {e}")))?;
         }
+        drop(probe);
 
-        Ok(Self {
+        let size = match pool_size {
+            Some(0) | None => DEFAULT_POOL_SIZE,
+            Some(n) => n,
+        };
+
+        let mgr = CipherConnManager {
             addr: addr.to_string(),
             auth_token: auth_token.map(String::from),
-            keyring,
-        })
-    }
+        };
+        let pool = CipherPool::builder(mgr)
+            .max_size(size)
+            .build()
+            .map_err(|e| SigilError::Internal(format!("cipher pool build failed: {e}")))?;
 
-    /// Create a fresh client connection, authenticating if configured.
-    async fn fresh_client(&self) -> Result<CipherClient, SigilError> {
-        let mut client = CipherClient::connect(&self.addr)
-            .await
-            .map_err(|e| SigilError::Internal(format!("cipher connect failed: {e}")))?;
-
-        if let Some(ref token) = self.auth_token {
-            client
-                .auth(token)
-                .await
-                .map_err(|e| SigilError::Internal(format!("cipher auth failed: {e}")))?;
-        }
-
-        Ok(client)
+        Ok(Self { pool, keyring })
     }
 }
 
@@ -71,7 +103,11 @@ impl CipherOps for RemoteCipherOps {
         let context_owned = context.map(String::from);
         Box::pin(async move {
             let ctx_ref = context_owned.as_deref();
-            let mut client = self.fresh_client().await?;
+            let mut client = self
+                .pool
+                .get()
+                .await
+                .map_err(|e| SigilError::Internal(format!("cipher pool get failed: {e}")))?;
             let result = client
                 .encrypt(&self.keyring, &b64, ctx_ref, None, false)
                 .await
@@ -90,7 +126,11 @@ impl CipherOps for RemoteCipherOps {
         let context_owned = context.map(String::from);
         Box::pin(async move {
             let ctx_ref = context_owned.as_deref();
-            let mut client = self.fresh_client().await?;
+            let mut client = self
+                .pool
+                .get()
+                .await
+                .map_err(|e| SigilError::Internal(format!("cipher pool get failed: {e}")))?;
             let result = client
                 .decrypt(&self.keyring, &ciphertext_owned, ctx_ref)
                 .await

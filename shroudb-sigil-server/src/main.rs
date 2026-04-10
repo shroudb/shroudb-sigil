@@ -124,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
             &cipher_cfg.addr,
             cipher_cfg.keyring.clone(),
             cipher_cfg.auth_token.as_deref(),
+            cipher_cfg.pool_size,
         )
         .await
         .context("failed to connect to cipher server")?;
@@ -136,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
             &veil_cfg.addr,
             veil_cfg.index.clone(),
             veil_cfg.auth_token.as_deref(),
+            veil_cfg.pool_size,
         )
         .await
         .context("failed to connect to veil server")?;
@@ -147,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
         let keep_ops = shroudb_sigil_engine::keep_remote::RemoteKeepOps::connect(
             &keep_cfg.addr,
             keep_cfg.auth_token.as_deref(),
+            keep_cfg.pool_size,
         )
         .await
         .context("failed to connect to keep server")?;
