@@ -23,6 +23,7 @@ shroudb-veil-client.workspace = true
 shroudb-crypto.workspace = true
 shroudb-protocol-wire.workspace = true
 shroudb-server-tcp.workspace = true
+tokio-rustls.workspace = true
 
 axum.workspace = true
 tokio.workspace = true
