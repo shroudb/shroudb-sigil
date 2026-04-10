@@ -2243,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-cli"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -2254,7 +2254,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-client"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -2265,7 +2265,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-core"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -2274,7 +2274,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-engine"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "argon2",
  "base64",
@@ -2301,7 +2301,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-protocol"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -2318,7 +2318,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-server"
-version = "1.5.5"
+version = "1.5.6"
 dependencies = [
  "anyhow",
  "axum",
