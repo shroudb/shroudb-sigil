@@ -4,6 +4,26 @@ All notable changes to ShrouDB Sigil are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v1.8.0] - 2026-04-11
+
+### Added
+
+- `claim` field annotation: auto-include index/inert field values in JWT claims on session create and refresh
+- `Schema::claim_fields()` method returns claim-annotated field names
+- `SessionManager::peek_entity_id()` for reading entity_id from refresh tokens without modification
+- `SigilEngine::build_enriched_claims()` merges envelope values with caller META claims
+- `SigilResponse::body()` for extracting response payloads
+- `JwtManager::store()` accessor
+- 19 new tests (7 schema validation, 3 session unit, 6 protocol dispatch, 3 HTTP integration)
+
+### Changed
+
+- `SessionManager::refresh()` accepts `extra_claims` parameter for claim enrichment
+- `SigilEngine::session_create()` auto-enriches from claim-annotated fields after credential verification
+- `SigilEngine::session_refresh()` re-reads claim fields from current envelope, reflecting role changes without re-login
+- Enriched claim values override caller-provided META for the same key
+- Protocol spec bumped to v1.1.0
+
 ## [v1.5.5] - 2026-04-09
 
 ### Fixed
