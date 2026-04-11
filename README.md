@@ -12,12 +12,13 @@ SCHEMA REGISTER myapp {
   "fields": [
     {"name": "email",    "field_type": "string", "annotations": {"pii": true, "searchable": true}},
     {"name": "password", "field_type": "string", "annotations": {"credential": true}},
-    {"name": "org_id",   "field_type": "string", "annotations": {"index": true}}
+    {"name": "org_id",   "field_type": "string", "annotations": {"index": true}},
+    {"name": "role",     "field_type": "string", "annotations": {"index": true, "claim": true}}
   ]
 }
 ```
 
-Then `USER CREATE myapp alice {"email":"a@b.com","password":"secret","org_id":"acme"}` knows what to do with each field:
+Then `USER CREATE myapp alice {"email":"a@b.com","password":"secret","org_id":"acme","role":"admin"}` knows what to do with each field:
 
 | Annotation | Treatment | Engine |
 |-----------|-----------|--------|
@@ -26,6 +27,7 @@ Then `USER CREATE myapp alice {"email":"a@b.com","password":"secret","org_id":"a
 | `pii` + `searchable` | Encrypt + blind index | Cipher + Veil |
 | `secret` | Versioned secret storage | Keep |
 | `index` | Plaintext lookup index | Sigil (internal) |
+| `claim` | Auto-include in JWT claims on login/refresh | Sigil (internal) |
 
 The developer's API surface is "store this user shape" and "verify this credential." Sigil routes fields to the right engines internally.
 
@@ -155,6 +157,7 @@ shroudb-sigil --config config.toml
 
 - **Access tokens:** JWT (ES256), configurable TTL (default 15m)
 - **Refresh tokens:** opaque, family-based rotation with reuse detection
+- **Claim enrichment:** fields annotated with `claim: true` are auto-included in JWT claims from the entity's envelope on both login and refresh. Enriched values always reflect the current envelope state, so role changes take effect on the next refresh without re-login.
 - **Key rotation:** active → draining → retired lifecycle
 - **Account lockout:** configurable failed attempt threshold + lockout duration
 - **JWKS:** public key set for external JWT verification

@@ -10,6 +10,7 @@ Applications that handle credentials face a common problem: every field in a cre
 - **PII** (email, phone, address) is encrypted at rest via the Cipher engine
 - **Searchable PII** gets encrypted storage plus a blind index for querying
 - **Secrets** (third-party tokens) get versioned storage with rotation via Keep
+- **Claim fields** (roles, permissions) are auto-included in JWT access tokens on login and refresh
 - **Everything else** is stored as-is
 
 Sigil is entity-agnostic. The same schema annotations work for users, services, devices, or any entity that holds credentials. The generic `ENVELOPE` commands work with any entity type. The `USER` commands are sugar that infer the credential field — same engine underneath.

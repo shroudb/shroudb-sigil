@@ -78,6 +78,16 @@ impl Schema {
             .collect()
     }
 
+    /// Returns the names of all claim-annotated fields.
+    /// These fields have their envelope values auto-included in JWT claims.
+    pub fn claim_fields(&self) -> Vec<&str> {
+        self.fields
+            .iter()
+            .filter(|f| f.annotations.claim)
+            .map(|f| f.name.as_str())
+            .collect()
+    }
+
     /// Returns the single credential field name, or an error if zero or
     /// multiple credential fields exist. Used by the `USER` command sugar
     /// where the credential field is inferred from the schema.
@@ -157,6 +167,24 @@ impl FieldAnnotations {
             )));
         }
 
+        if self.claim && self.credential {
+            return Err(SigilError::SchemaValidation(format!(
+                "field '{field_name}': claim and credential are mutually exclusive"
+            )));
+        }
+
+        if self.claim && self.pii {
+            return Err(SigilError::SchemaValidation(format!(
+                "field '{field_name}': claim and pii are mutually exclusive (encrypted values cannot be included in JWT claims)"
+            )));
+        }
+
+        if self.claim && self.secret {
+            return Err(SigilError::SchemaValidation(format!(
+                "field '{field_name}': claim and secret are mutually exclusive"
+            )));
+        }
+
         Ok(())
     }
 }
@@ -198,6 +226,13 @@ pub struct FieldAnnotations {
     /// Create a plaintext index for direct lookups.
     #[serde(default)]
     pub index: bool,
+
+    /// Include this field's value in JWT claims on session creation and refresh.
+    /// Only valid on non-credential, non-pii, non-secret fields (index or inert).
+    /// Enriched claim values always come from the envelope, overriding any
+    /// caller-provided extra_claims for the same key.
+    #[serde(default)]
+    pub claim: bool,
 }
 
 #[cfg(test)]
@@ -365,5 +400,94 @@ mod tests {
             required: false,
         });
         assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn claim_on_index_field_valid() {
+        let s = schema(
+            "myapp",
+            vec![
+                field("password", |a| a.credential = true),
+                field("role", |a| {
+                    a.index = true;
+                    a.claim = true;
+                }),
+            ],
+        );
+        assert!(s.validate().is_ok());
+        assert_eq!(s.claim_fields(), vec!["role"]);
+    }
+
+    #[test]
+    fn claim_on_inert_field_valid() {
+        let s = schema(
+            "myapp",
+            vec![
+                field("password", |a| a.credential = true),
+                field("display_name", |a| a.claim = true),
+            ],
+        );
+        assert!(s.validate().is_ok());
+        assert_eq!(s.claim_fields(), vec!["display_name"]);
+    }
+
+    #[test]
+    fn claim_and_credential_mutually_exclusive() {
+        let s = schema(
+            "myapp",
+            vec![field("password", |a| {
+                a.credential = true;
+                a.claim = true;
+            })],
+        );
+        let err = s.validate().unwrap_err();
+        assert!(err.to_string().contains("claim and credential"));
+    }
+
+    #[test]
+    fn claim_and_pii_mutually_exclusive() {
+        let s = schema(
+            "myapp",
+            vec![field("email", |a| {
+                a.pii = true;
+                a.claim = true;
+            })],
+        );
+        let err = s.validate().unwrap_err();
+        assert!(err.to_string().contains("claim and pii"));
+    }
+
+    #[test]
+    fn claim_and_secret_mutually_exclusive() {
+        let s = schema(
+            "myapp",
+            vec![field("api_key", |a| {
+                a.secret = true;
+                a.claim = true;
+            })],
+        );
+        let err = s.validate().unwrap_err();
+        assert!(err.to_string().contains("claim and secret"));
+    }
+
+    #[test]
+    fn no_claim_fields_returns_empty() {
+        let s = schema(
+            "myapp",
+            vec![
+                field("password", |a| a.credential = true),
+                field("org", |a| a.index = true),
+            ],
+        );
+        assert!(s.claim_fields().is_empty());
+    }
+
+    #[test]
+    fn claim_field_defaults_false_on_deserialize() {
+        // Simulate a schema stored before claim annotation existed
+        let json = r#"{"name":"legacy","fields":[{"name":"role","field_type":"string","annotations":{"index":true}}]}"#;
+        let parsed: Schema = serde_json::from_str(json).unwrap();
+        assert!(!parsed.fields[0].annotations.claim);
+        assert!(parsed.claim_fields().is_empty());
     }
 }

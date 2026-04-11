@@ -42,6 +42,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json", "cookies"] }
+base64.workspace = true
 shroudb-cipher-client.workspace = true
 shroudb-cipher-blind.workspace = true
 shroudb-keep-client.workspace = true

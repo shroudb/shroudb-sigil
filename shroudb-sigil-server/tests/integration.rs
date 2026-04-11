@@ -3,6 +3,18 @@ mod common;
 use common::*;
 use std::time::Duration;
 
+/// Decode JWT payload without verification (for integration test assertions).
+fn decode_jwt_payload(token: &str) -> serde_json::Value {
+    let parts: Vec<&str> = token.split('.').collect();
+    assert_eq!(parts.len(), 3, "JWT must have 3 parts");
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(parts[1])
+        .expect("JWT payload must be valid base64");
+    serde_json::from_slice(&payload).expect("JWT payload must be valid JSON")
+}
+
+use base64::Engine;
+
 // ═══════════════════════════════════════════════════════════════════════
 // HTTP: Full auth lifecycle
 // ═══════════════════════════════════════════════════════════════════════
@@ -2104,5 +2116,212 @@ async fn blind_searchable_field_requires_tokens() {
         400,
         "blind searchable without tokens should fail: {}",
         resp.text().await.unwrap_or_default()
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// HTTP: Claim enrichment (MED-27 + MED-28)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn http_session_create_enriches_claim_fields() {
+    let server = TestServer::start().await.expect("server failed to start");
+    let client = reqwest::Client::new();
+
+    // Register schema with claim-annotated role field
+    let resp = client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "claimapp",
+            "fields": [
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+                {"name": "role", "field_type": "string", "annotations": {"index": true, "claim": true}},
+                {"name": "org", "field_type": "string", "annotations": {"index": true}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201, "schema register failed");
+
+    // Create user with role=admin
+    let resp = client
+        .post(server.http_url("/sigil/claimapp/users"))
+        .json(&serde_json::json!({
+            "fields": {
+                "entity_id": "alice",
+                "password": "correcthorse",
+                "role": "admin",
+                "org": "acme"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201, "user create failed");
+
+    // Login
+    let resp = client
+        .post(server.http_url("/sigil/claimapp/sessions"))
+        .json(&serde_json::json!({"entity_id": "alice", "password": "correcthorse"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let login: serde_json::Value = resp.json().await.unwrap();
+
+    // Verify JWT contains enriched role claim
+    let claims = decode_jwt_payload(login["access_token"].as_str().unwrap());
+    assert_eq!(claims["sub"], "alice");
+    assert_eq!(claims["role"], "admin", "claim field 'role' not enriched");
+    assert!(
+        claims.get("org").is_none(),
+        "non-claim field 'org' should not be in JWT"
+    );
+}
+
+#[tokio::test]
+async fn http_session_refresh_enriches_claims() {
+    let server = TestServer::start().await.expect("server failed to start");
+    let client = reqwest::Client::new();
+
+    // Register schema with claim-annotated role
+    let resp = client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "refreshclaimapp",
+            "fields": [
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+                {"name": "role", "field_type": "string", "annotations": {"index": true, "claim": true}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Create user
+    let resp = client
+        .post(server.http_url("/sigil/refreshclaimapp/users"))
+        .json(&serde_json::json!({
+            "fields": {
+                "entity_id": "bob",
+                "password": "correcthorse",
+                "role": "editor"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Login
+    let resp = client
+        .post(server.http_url("/sigil/refreshclaimapp/sessions"))
+        .json(&serde_json::json!({"entity_id": "bob", "password": "correcthorse"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let login: serde_json::Value = resp.json().await.unwrap();
+    let refresh_token = login["refresh_token"].as_str().unwrap().to_string();
+
+    // Verify initial token has role
+    let claims = decode_jwt_payload(login["access_token"].as_str().unwrap());
+    assert_eq!(claims["role"], "editor");
+
+    // Refresh — should still have role
+    let resp = client
+        .post(server.http_url("/sigil/refreshclaimapp/sessions/refresh"))
+        .json(&serde_json::json!({"refresh_token": refresh_token}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let refreshed: serde_json::Value = resp.json().await.unwrap();
+
+    let claims = decode_jwt_payload(refreshed["access_token"].as_str().unwrap());
+    assert_eq!(claims["sub"], "bob");
+    assert_eq!(
+        claims["role"], "editor",
+        "refreshed token should have enriched role"
+    );
+}
+
+#[tokio::test]
+async fn http_session_refresh_reflects_role_change() {
+    let server = TestServer::start().await.expect("server failed to start");
+    let client = reqwest::Client::new();
+
+    // Register schema
+    let resp = client
+        .post(server.http_url("/sigil/schemas"))
+        .json(&serde_json::json!({
+            "name": "rolechangehttp",
+            "fields": [
+                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+                {"name": "role", "field_type": "string", "annotations": {"index": true, "claim": true}}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Create user with role=admin
+    let resp = client
+        .post(server.http_url("/sigil/rolechangehttp/users"))
+        .json(&serde_json::json!({
+            "fields": {
+                "entity_id": "charlie",
+                "password": "correcthorse",
+                "role": "admin"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // Login
+    let resp = client
+        .post(server.http_url("/sigil/rolechangehttp/sessions"))
+        .json(&serde_json::json!({"entity_id": "charlie", "password": "correcthorse"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let login: serde_json::Value = resp.json().await.unwrap();
+    let refresh_token = login["refresh_token"].as_str().unwrap().to_string();
+
+    // Initial token has role=admin
+    let claims = decode_jwt_payload(login["access_token"].as_str().unwrap());
+    assert_eq!(claims["role"], "admin");
+
+    // Update role to viewer
+    let resp = client
+        .patch(server.http_url("/sigil/rolechangehttp/users/charlie"))
+        .json(&serde_json::json!({
+            "fields": {"role": "viewer"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "user update failed");
+
+    // Refresh — should pick up new role
+    let resp = client
+        .post(server.http_url("/sigil/rolechangehttp/sessions/refresh"))
+        .json(&serde_json::json!({"refresh_token": refresh_token}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let refreshed: serde_json::Value = resp.json().await.unwrap();
+
+    let claims = decode_jwt_payload(refreshed["access_token"].as_str().unwrap());
+    assert_eq!(
+        claims["role"], "viewer",
+        "refreshed token should reflect updated role"
     );
 }

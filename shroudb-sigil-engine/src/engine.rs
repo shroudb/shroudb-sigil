@@ -42,7 +42,8 @@ impl Default for SigilConfig {
 pub struct SigilEngine<S: Store> {
     pub(crate) schemas: SchemaRegistry<S>,
     pub(crate) credentials: Arc<CredentialManager<S>>,
-    pub(crate) jwt: Arc<JwtManager<S>>,
+    /// JWT manager — public for token verification in tests and downstream crates.
+    pub jwt: Arc<JwtManager<S>>,
     pub(crate) sessions: SessionManager<S>,
     pub(crate) coordinator: WriteCoordinator<S>,
 }
@@ -295,8 +296,12 @@ impl<S: Store> SigilEngine<S> {
             .verify(schema_name, entity_id, cred_field, password)
             .await?;
 
+        let merged = self
+            .build_enriched_claims(&schema, entity_id, extra_claims)
+            .await?;
+
         self.sessions
-            .create_session(schema_name, entity_id, extra_claims)
+            .create_session(schema_name, entity_id, merged.as_ref())
             .await
     }
 
@@ -305,7 +310,20 @@ impl<S: Store> SigilEngine<S> {
         schema_name: &str,
         token: &str,
     ) -> Result<TokenPair, SigilError> {
-        self.sessions.refresh(schema_name, token).await
+        let schema = self.schemas.get(schema_name).await?;
+        let claim_fields = schema.claim_fields();
+
+        let enrichment = if !claim_fields.is_empty() {
+            let entity_id = self.sessions.peek_entity_id(schema_name, token).await?;
+            self.build_enriched_claims(&schema, &entity_id, None)
+                .await?
+        } else {
+            None
+        };
+
+        self.sessions
+            .refresh(schema_name, token, enrichment.as_ref())
+            .await
     }
 
     pub async fn session_revoke(&self, schema_name: &str, token: &str) -> Result<(), SigilError> {
@@ -405,6 +423,57 @@ impl<S: Store> SigilEngine<S> {
         let cred_field = schema.credential_field_name()?;
         self.credential_import(schema_name, user_id, cred_field, hash)
             .await
+    }
+
+    // ── Claim enrichment ─────────────────────────────────────────────
+
+    /// Build enriched claims by merging caller-provided extra_claims with
+    /// schema-level claim fields read from the entity's envelope.
+    ///
+    /// Enriched fields (from envelope) always override caller-provided claims
+    /// for the same key, ensuring authoritative values (like roles) come from
+    /// the envelope, not the client.
+    async fn build_enriched_claims(
+        &self,
+        schema: &Schema,
+        entity_id: &str,
+        extra_claims: Option<&serde_json::Value>,
+    ) -> Result<Option<serde_json::Value>, SigilError> {
+        let claim_fields = schema.claim_fields();
+
+        // Start with caller-provided claims
+        let mut merged = serde_json::Map::new();
+        if let Some(extra) = extra_claims
+            && let Some(obj) = extra.as_object()
+        {
+            for (k, v) in obj {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+
+        // Enrich from envelope if schema has claim-annotated fields
+        if !claim_fields.is_empty() {
+            // Read envelope without decryption — claim fields are index/inert
+            // so their values are plaintext in the record
+            if let Ok(envelope) = self
+                .coordinator
+                .get_envelope(schema, entity_id, false)
+                .await
+            {
+                for field_name in &claim_fields {
+                    if let Some(value) = envelope.fields.get(*field_name) {
+                        // Enriched fields always override caller claims
+                        merged.insert(field_name.to_string(), value.clone());
+                    }
+                }
+            }
+        }
+
+        if merged.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(serde_json::Value::Object(merged)))
+        }
     }
 
     // ── JWT operations ──────────────────────────────────────────────

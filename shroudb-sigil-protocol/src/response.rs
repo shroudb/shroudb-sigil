@@ -23,4 +23,13 @@ impl SigilResponse {
     pub fn is_ok(&self) -> bool {
         matches!(self, Self::Ok(_))
     }
+
+    /// Returns the JSON body as a string. Returns the error message for error
+    /// responses.
+    pub fn body(&self) -> String {
+        match self {
+            Self::Ok(v) => v.to_string(),
+            Self::Error(e) => e.clone(),
+        }
+    }
 }

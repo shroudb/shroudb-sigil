@@ -62,6 +62,7 @@ SCHEMA REGISTER myapp {"fields":[...]}
 | `searchable: true` | Encrypted + blind index for search | Cipher + Veil engines |
 | `secret: true` | Versioned secret with rotation | Keep engine |
 | `index: true` | Plaintext lookup index | — |
+| `claim: true` | Auto-include in JWT claims on session create/refresh | — |
 | (none) | Stored as-is | — |
 
 ### Validation rules
@@ -70,6 +71,7 @@ SCHEMA REGISTER myapp {"fields":[...]}
 - `searchable` requires `pii`
 - `credential` and `pii` are mutually exclusive (credentials are hashed, not encrypted)
 - `credential` and `secret` are mutually exclusive
+- `claim` is mutually exclusive with `credential`, `pii`, and `secret` (only index/inert field values can be included in JWTs)
 - Field names: alphanumeric + underscores only
 
 ### Capability requirements
@@ -243,6 +245,8 @@ Returns:
 
 Wire protocol: `SESSION CREATE <schema> <id> <password> [META <json>]`
 
+Fields annotated with `claim: true` in the schema are automatically read from the entity's envelope and merged into the JWT access token. Enriched values (from the envelope) override any caller-provided META for the same key, ensuring authoritative fields like `role` always come from the database. Non-enriched META claims pass through as-is.
+
 ### Login by Field
 
 Login using a field value (e.g., email) instead of entity ID.
@@ -263,7 +267,7 @@ curl -X POST http://localhost:6500/sigil/myapp/sessions/refresh \
   -d '{"refresh_token": "a3f2..."}'
 ```
 
-Issues a new access token and rotates the refresh token. If the old refresh token is reused (indicating theft), the entire token family is revoked.
+Issues a new access token and rotates the refresh token. If the old refresh token is reused (indicating theft), the entire token family is revoked. Claim-annotated fields are re-read from the entity's current envelope on each refresh, so changes (e.g., role updates) take effect without requiring a full re-login.
 
 ### Logout
 

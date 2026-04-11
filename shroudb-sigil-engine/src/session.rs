@@ -91,11 +91,35 @@ impl<S: Store> SessionManager<S> {
         })
     }
 
+    /// Look up the entity_id associated with a refresh token without modifying it.
+    /// Used by the engine to build enrichment claims before calling `refresh`.
+    pub async fn peek_entity_id(&self, schema: &str, token: &str) -> Result<String, SigilError> {
+        let ns = sessions_namespace(schema);
+        let entry = self
+            .store
+            .get(&ns, token.as_bytes(), None)
+            .await
+            .map_err(|_| SigilError::InvalidToken)?;
+
+        let record: RefreshTokenRecord = serde_json::from_slice(&entry.value)
+            .map_err(|e| SigilError::Internal(e.to_string()))?;
+
+        Ok(record.entity_id)
+    }
+
     /// Refresh: rotate the refresh token and issue a new access token.
     ///
     /// If the presented token has already been rotated (reuse detection),
     /// the entire family is revoked and `TokenReuse` is returned.
-    pub async fn refresh(&self, schema: &str, token: &str) -> Result<TokenPair, SigilError> {
+    ///
+    /// `extra_claims` are merged into the new access token (used for
+    /// schema-level claim enrichment from envelope fields).
+    pub async fn refresh(
+        &self,
+        schema: &str,
+        token: &str,
+        extra_claims: Option<&serde_json::Value>,
+    ) -> Result<TokenPair, SigilError> {
         let ns = sessions_namespace(schema);
         let entry = self
             .store
@@ -148,8 +172,15 @@ impl<S: Store> SessionManager<S> {
             .await
             .map_err(|e| SigilError::Store(e.to_string()))?;
 
-        // Sign new access token
-        let claims = serde_json::json!({ "sub": record.entity_id });
+        // Sign new access token with enrichment claims
+        let mut claims = serde_json::json!({ "sub": record.entity_id });
+        if let Some(extra) = extra_claims
+            && let Some(obj) = extra.as_object()
+        {
+            for (k, v) in obj {
+                claims[k] = v.clone();
+            }
+        }
         let access_token = self.jwt.sign(schema, &claims).await?;
 
         Ok(TokenPair {
@@ -342,7 +373,10 @@ mod tests {
     async fn refresh_rotates_token() {
         let (_store, sm) = setup().await;
         let pair1 = sm.create_session("myapp", "user1", None).await.unwrap();
-        let pair2 = sm.refresh("myapp", &pair1.refresh_token).await.unwrap();
+        let pair2 = sm
+            .refresh("myapp", &pair1.refresh_token, None)
+            .await
+            .unwrap();
 
         // New tokens issued
         assert_ne!(pair1.refresh_token, pair2.refresh_token);
@@ -355,14 +389,23 @@ mod tests {
         let pair1 = sm.create_session("myapp", "user1", None).await.unwrap();
 
         // First refresh succeeds
-        let pair2 = sm.refresh("myapp", &pair1.refresh_token).await.unwrap();
+        let pair2 = sm
+            .refresh("myapp", &pair1.refresh_token, None)
+            .await
+            .unwrap();
 
         // Reusing the old token triggers family revocation
-        let err = sm.refresh("myapp", &pair1.refresh_token).await.unwrap_err();
+        let err = sm
+            .refresh("myapp", &pair1.refresh_token, None)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("reuse"));
 
         // The new token from pair2 should also be revoked (family killed)
-        let err = sm.refresh("myapp", &pair2.refresh_token).await.unwrap_err();
+        let err = sm
+            .refresh("myapp", &pair2.refresh_token, None)
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("invalid") || err.to_string().contains("Revoked"),
             "expected revoked token error, got: {err}"
@@ -376,7 +419,10 @@ mod tests {
 
         sm.revoke("myapp", &pair.refresh_token).await.unwrap();
 
-        let err = sm.refresh("myapp", &pair.refresh_token).await.unwrap_err();
+        let err = sm
+            .refresh("myapp", &pair.refresh_token, None)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("invalid"));
     }
 
@@ -393,8 +439,16 @@ mod tests {
         assert_eq!(revoked, 2);
 
         // user1 sessions revoked
-        assert!(sm.refresh("myapp", &pair1.refresh_token).await.is_err());
-        assert!(sm.refresh("myapp", &pair2.refresh_token).await.is_err());
+        assert!(
+            sm.refresh("myapp", &pair1.refresh_token, None)
+                .await
+                .is_err()
+        );
+        assert!(
+            sm.refresh("myapp", &pair2.refresh_token, None)
+                .await
+                .is_err()
+        );
 
         // user2 unaffected
         let sessions = sm.list_sessions("myapp", "user2").await.unwrap();
@@ -431,5 +485,62 @@ mod tests {
         assert_eq!(claims["sub"], "user1");
         assert_eq!(claims["role"], "admin");
         assert_eq!(claims["org"], "acme");
+    }
+
+    #[tokio::test]
+    async fn refresh_preserves_extra_claims() {
+        let (_store, sm) = setup().await;
+        let extra = serde_json::json!({"role": "admin", "org": "acme"});
+        let pair = sm
+            .create_session("myapp", "user1", Some(&extra))
+            .await
+            .unwrap();
+
+        // Refresh with the same enrichment claims
+        let refreshed = sm
+            .refresh("myapp", &pair.refresh_token, Some(&extra))
+            .await
+            .unwrap();
+
+        // Verify refreshed token still has the claims
+        let jwt = JwtManager::new(sm.store.clone(), JwtAlgorithm::ES256, 900);
+        let claims = jwt.verify("myapp", &refreshed.access_token).await.unwrap();
+        assert_eq!(claims["sub"], "user1");
+        assert_eq!(claims["role"], "admin");
+        assert_eq!(claims["org"], "acme");
+    }
+
+    #[tokio::test]
+    async fn refresh_without_claims_has_sub_only() {
+        let (_store, sm) = setup().await;
+        let extra = serde_json::json!({"role": "admin"});
+        let pair = sm
+            .create_session("myapp", "user1", Some(&extra))
+            .await
+            .unwrap();
+
+        // Refresh without extra claims
+        let refreshed = sm
+            .refresh("myapp", &pair.refresh_token, None)
+            .await
+            .unwrap();
+
+        // Refreshed token only has sub
+        let jwt = JwtManager::new(sm.store.clone(), JwtAlgorithm::ES256, 900);
+        let claims = jwt.verify("myapp", &refreshed.access_token).await.unwrap();
+        assert_eq!(claims["sub"], "user1");
+        assert!(claims.get("role").is_none());
+    }
+
+    #[tokio::test]
+    async fn peek_entity_id_returns_correct_entity() {
+        let (_store, sm) = setup().await;
+        let pair = sm.create_session("myapp", "user1", None).await.unwrap();
+
+        let entity_id = sm
+            .peek_entity_id("myapp", &pair.refresh_token)
+            .await
+            .unwrap();
+        assert_eq!(entity_id, "user1");
     }
 }

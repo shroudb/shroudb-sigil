@@ -446,6 +446,7 @@ mod tests {
     use crate::commands::parse_command;
     use shroudb_sigil_engine::capabilities::Capabilities;
     use shroudb_sigil_engine::engine::SigilConfig;
+    use shroudb_sigil_engine::jwt::JwtManager;
 
     async fn setup() -> SigilEngine<shroudb_storage::EmbeddedStore> {
         let store = shroudb_storage::test_util::create_test_store("sigil-test").await;
@@ -700,5 +701,344 @@ mod tests {
             resp.is_ok(),
             "reading old envelope after ALTER failed: {resp:?}"
         );
+    }
+
+    // ── MED-27: Session claim enrichment ───────────────────────────
+
+    #[tokio::test]
+    async fn session_create_enriches_claim_fields() {
+        let engine = setup().await;
+
+        // Register schema with a claim-annotated field
+        let cmd = parse_command(&[
+            "SCHEMA",
+            "REGISTER",
+            "claimapp",
+            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"role","field_type":"string","annotations":{"index":true,"claim":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok(), "schema register failed: {resp:?}");
+
+        // Create user with role=admin, org=acme
+        let cmd = parse_command(&[
+            "USER",
+            "CREATE",
+            "claimapp",
+            "user1",
+            r#"{"password":"correcthorse","role":"admin","org":"acme"}"#,
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok(), "user create failed: {resp:?}");
+
+        // Login — should auto-enrich with role from envelope
+        let cmd =
+            parse_command(&["SESSION", "CREATE", "claimapp", "user1", "correcthorse"]).unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok(), "session create failed: {resp:?}");
+
+        // Verify access token has enriched role claim
+        let body: serde_json::Value = serde_json::from_str(&resp.body()).unwrap();
+        let access_token = body["access_token"].as_str().unwrap();
+        let jwt = JwtManager::new(
+            engine.jwt.store().clone(),
+            shroudb_crypto::JwtAlgorithm::ES256,
+            900,
+        );
+        let claims = jwt.verify("claimapp", access_token).await.unwrap();
+        assert_eq!(claims["sub"], "user1");
+        assert_eq!(claims["role"], "admin", "claim field 'role' not enriched");
+        // org is NOT claim-annotated, should not be in JWT
+        assert!(
+            claims.get("org").is_none(),
+            "non-claim field 'org' should not be in JWT"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_create_enriched_overrides_caller_claims() {
+        let engine = setup().await;
+
+        // Register schema with claim-annotated role
+        let cmd = parse_command(&[
+            "SCHEMA",
+            "REGISTER",
+            "overrideapp",
+            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"role","field_type":"string","annotations":{"index":true,"claim":true}}]}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        // Create user with role=viewer
+        let cmd = parse_command(&[
+            "USER",
+            "CREATE",
+            "overrideapp",
+            "user1",
+            r#"{"password":"correcthorse","role":"viewer"}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        // Login with META claiming role=admin — enrichment should override
+        let cmd = parse_command(&[
+            "SESSION",
+            "CREATE",
+            "overrideapp",
+            "user1",
+            "correcthorse",
+            "META",
+            r#"{"role":"admin","custom":"val"}"#,
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok(), "session create failed: {resp:?}");
+
+        let body: serde_json::Value = serde_json::from_str(&resp.body()).unwrap();
+        let access_token = body["access_token"].as_str().unwrap();
+        let jwt = JwtManager::new(
+            engine.jwt.store().clone(),
+            shroudb_crypto::JwtAlgorithm::ES256,
+            900,
+        );
+        let claims = jwt.verify("overrideapp", access_token).await.unwrap();
+        // Enriched role=viewer from envelope overrides caller role=admin
+        assert_eq!(
+            claims["role"], "viewer",
+            "enriched claim should override caller"
+        );
+        // Non-enriched caller claims pass through
+        assert_eq!(
+            claims["custom"], "val",
+            "non-enriched caller claim should pass through"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_create_no_claim_fields_behaves_as_before() {
+        let engine = setup().await;
+
+        // Register schema with no claim-annotated fields
+        let cmd = parse_command(&[
+            "SCHEMA",
+            "REGISTER",
+            "noclaimapp",
+            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        let cmd = parse_command(&[
+            "USER",
+            "CREATE",
+            "noclaimapp",
+            "user1",
+            r#"{"password":"correcthorse","org":"acme"}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        // Login with META — should be passed through as-is
+        let cmd = parse_command(&[
+            "SESSION",
+            "CREATE",
+            "noclaimapp",
+            "user1",
+            "correcthorse",
+            "META",
+            r#"{"custom":"val"}"#,
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok(), "session create failed: {resp:?}");
+
+        let body: serde_json::Value = serde_json::from_str(&resp.body()).unwrap();
+        let access_token = body["access_token"].as_str().unwrap();
+        let jwt = JwtManager::new(
+            engine.jwt.store().clone(),
+            shroudb_crypto::JwtAlgorithm::ES256,
+            900,
+        );
+        let claims = jwt.verify("noclaimapp", access_token).await.unwrap();
+        assert_eq!(claims["sub"], "user1");
+        assert_eq!(claims["custom"], "val");
+        // org should NOT be in JWT (no claim annotation)
+        assert!(claims.get("org").is_none());
+    }
+
+    // ── MED-28: Session refresh preserves enrichment ───────────────
+
+    #[tokio::test]
+    async fn session_refresh_enriches_claims() {
+        let engine = setup().await;
+
+        // Register schema with claim-annotated role
+        let cmd = parse_command(&[
+            "SCHEMA",
+            "REGISTER",
+            "refreshapp",
+            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"role","field_type":"string","annotations":{"index":true,"claim":true}}]}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        let cmd = parse_command(&[
+            "USER",
+            "CREATE",
+            "refreshapp",
+            "user1",
+            r#"{"password":"correcthorse","role":"admin"}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        // Login
+        let cmd =
+            parse_command(&["SESSION", "CREATE", "refreshapp", "user1", "correcthorse"]).unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        let body: serde_json::Value = serde_json::from_str(&resp.body()).unwrap();
+        let refresh_token = body["refresh_token"].as_str().unwrap().to_string();
+
+        // Refresh — should auto-enrich with current role from envelope
+        let cmd = parse_command(&["SESSION", "REFRESH", "refreshapp", &refresh_token]).unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok(), "session refresh failed: {resp:?}");
+
+        let body: serde_json::Value = serde_json::from_str(&resp.body()).unwrap();
+        let access_token = body["access_token"].as_str().unwrap();
+        let jwt = JwtManager::new(
+            engine.jwt.store().clone(),
+            shroudb_crypto::JwtAlgorithm::ES256,
+            900,
+        );
+        let claims = jwt.verify("refreshapp", access_token).await.unwrap();
+        assert_eq!(claims["sub"], "user1");
+        assert_eq!(
+            claims["role"], "admin",
+            "refreshed token should have enriched role"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_refresh_reflects_role_change() {
+        let engine = setup().await;
+
+        // Register schema with claim-annotated role
+        let cmd = parse_command(&[
+            "SCHEMA",
+            "REGISTER",
+            "rolechangeapp",
+            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"role","field_type":"string","annotations":{"index":true,"claim":true}}]}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        let cmd = parse_command(&[
+            "USER",
+            "CREATE",
+            "rolechangeapp",
+            "user1",
+            r#"{"password":"correcthorse","role":"admin"}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        // Login
+        let cmd = parse_command(&[
+            "SESSION",
+            "CREATE",
+            "rolechangeapp",
+            "user1",
+            "correcthorse",
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        let body: serde_json::Value = serde_json::from_str(&resp.body()).unwrap();
+        let refresh_token = body["refresh_token"].as_str().unwrap().to_string();
+
+        // Change role via envelope update
+        let cmd = parse_command(&[
+            "ENVELOPE",
+            "UPDATE",
+            "rolechangeapp",
+            "user1",
+            r#"{"role":"viewer"}"#,
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok(), "envelope update failed: {resp:?}");
+
+        // Refresh — should pick up new role
+        let cmd = parse_command(&["SESSION", "REFRESH", "rolechangeapp", &refresh_token]).unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok(), "session refresh failed: {resp:?}");
+
+        let body: serde_json::Value = serde_json::from_str(&resp.body()).unwrap();
+        let access_token = body["access_token"].as_str().unwrap();
+        let jwt = JwtManager::new(
+            engine.jwt.store().clone(),
+            shroudb_crypto::JwtAlgorithm::ES256,
+            900,
+        );
+        let claims = jwt.verify("rolechangeapp", access_token).await.unwrap();
+        assert_eq!(
+            claims["role"], "viewer",
+            "refreshed token should reflect updated role"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_refresh_no_claim_fields_has_sub_only() {
+        let engine = setup().await;
+
+        // Schema with no claim fields
+        let cmd = parse_command(&[
+            "SCHEMA",
+            "REGISTER",
+            "noclaimrefresh",
+            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        let cmd = parse_command(&[
+            "USER",
+            "CREATE",
+            "noclaimrefresh",
+            "user1",
+            r#"{"password":"correcthorse","org":"acme"}"#,
+        ])
+        .unwrap();
+        dispatch(&engine, cmd, None).await;
+
+        // Login with no extra claims
+        let cmd = parse_command(&[
+            "SESSION",
+            "CREATE",
+            "noclaimrefresh",
+            "user1",
+            "correcthorse",
+        ])
+        .unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        let body: serde_json::Value = serde_json::from_str(&resp.body()).unwrap();
+        let refresh_token = body["refresh_token"].as_str().unwrap().to_string();
+
+        // Refresh
+        let cmd = parse_command(&["SESSION", "REFRESH", "noclaimrefresh", &refresh_token]).unwrap();
+        let resp = dispatch(&engine, cmd, None).await;
+        assert!(resp.is_ok(), "session refresh failed: {resp:?}");
+
+        let body: serde_json::Value = serde_json::from_str(&resp.body()).unwrap();
+        let access_token = body["access_token"].as_str().unwrap();
+        let jwt = JwtManager::new(
+            engine.jwt.store().clone(),
+            shroudb_crypto::JwtAlgorithm::ES256,
+            900,
+        );
+        let claims = jwt.verify("noclaimrefresh", access_token).await.unwrap();
+        assert_eq!(claims["sub"], "user1");
+        assert!(claims.get("org").is_none());
     }
 }

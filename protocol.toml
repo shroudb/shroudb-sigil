@@ -5,7 +5,7 @@
 
 [protocol]
 name = "sigil"
-version = "1.0.0"
+version = "1.1.0"
 description = "Schema-driven credential envelope engine"
 default_tcp_port = 6499
 default_http_port = 6500
@@ -305,7 +305,7 @@ http = { method = "POST", path = "/sigil/{schema}/verify", request_body = "Verif
 
 [commands.SESSION_CREATE]
 syntax = "SESSION CREATE <schema> <id> <password> [META <json>]"
-description = "Verify credentials and issue access + refresh tokens"
+description = "Verify credentials and issue access + refresh tokens. Fields annotated with claim=true are auto-included in the JWT from the entity's envelope. Enriched claim values override caller-provided META for the same key."
 parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true, description = "Entity ID" },
@@ -317,7 +317,7 @@ http = { method = "POST", path = "/sigil/{schema}/sessions", request_body = "Log
 
 [commands.SESSION_REFRESH]
 syntax = "SESSION REFRESH <schema> <token>"
-description = "Rotate refresh token and issue new access token"
+description = "Rotate refresh token and issue new access token. Fields annotated with claim=true are re-read from the entity's current envelope, so refreshed tokens reflect the latest values (e.g. role changes)."
 parameters = [
     { name = "schema", type = "string", required = true },
     { name = "token", type = "string", required = true, description = "Current refresh token" },
@@ -439,6 +439,7 @@ fields = [
     { name = "searchable", type = "boolean", default = false, description = "Blind index via Veil (requires pii)" },
     { name = "secret", type = "boolean", default = false, description = "Versioned storage via Keep" },
     { name = "index", type = "boolean", default = false, description = "Plaintext lookup index" },
+    { name = "claim", type = "boolean", default = false, description = "Include in JWT claims on session create/refresh. Mutually exclusive with credential, pii, secret." },
 ]
 
 [types.SessionRecord]

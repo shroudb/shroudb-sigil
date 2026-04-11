@@ -45,6 +45,8 @@ pub struct SchemaFieldConfig {
     pub secret: bool,
     #[serde(default)]
     pub index: bool,
+    #[serde(default)]
+    pub claim: bool,
 }
 
 impl SchemaConfig {
@@ -70,6 +72,7 @@ impl SchemaConfig {
                         searchable: f.searchable,
                         secret: f.secret,
                         index: f.index,
+                        claim: f.claim,
                     },
                     required: true,
                 })

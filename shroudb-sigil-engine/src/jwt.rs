@@ -58,6 +58,11 @@ impl<S: Store> JwtManager<S> {
         }
     }
 
+    /// Get the underlying store reference.
+    pub fn store(&self) -> &Arc<S> {
+        &self.store
+    }
+
     /// Generate and store a new signing key. Returns the key ID.
     pub async fn create_key(&self, schema: &str) -> Result<String, SigilError> {
         let kp =
