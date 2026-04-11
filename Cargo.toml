@@ -14,7 +14,7 @@ members = [
 version = "1.8.0"
 edition = "2024"
 rust-version = "1.92"
-license = "MIT OR Apache-2.0"
+license = "LicenseRef-Proprietary"
 publish = ["shroudb"]
 
 [workspace.dependencies]
