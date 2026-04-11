@@ -4,6 +4,19 @@ All notable changes to ShrouDB Sigil are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v1.9.0] - 2026-04-11
+
+### Added
+
+- New `shroudb-sigil-http` crate: shared Axum HTTP router extracted from `shroudb-sigil-server` for reuse by both standalone Sigil and Moat gateway
+- CORS layer now allows PATCH and DELETE methods (required by user update/delete endpoints)
+
+### Changed
+
+- `shroudb-sigil-server` now depends on `shroudb-sigil-http` instead of bundling HTTP handlers inline
+- Removed `cors.rs`, `csrf.rs`, `rate_limit.rs`, `http.rs` from server binary (now in shared crate)
+- Protocol spec bumped to v1.2.0
+
 ## [v1.8.0] - 2026-04-11
 
 ### Added

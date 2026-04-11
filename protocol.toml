@@ -5,7 +5,7 @@
 
 [protocol]
 name = "sigil"
-version = "1.1.0"
+version = "1.2.0"
 description = "Schema-driven credential envelope engine"
 default_tcp_port = 6499
 default_http_port = 6500

@@ -5,7 +5,13 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 pub fn cors_layer(origins: &[String]) -> CorsLayer {
     let base = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, header::COOKIE]);
 
     if origins.iter().any(|o| o == "*") {

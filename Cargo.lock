@@ -2289,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-cli"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2300,7 +2300,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-client"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2311,7 +2311,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-core"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2320,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-engine"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "argon2",
  "base64",
@@ -2347,8 +2347,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "shroudb-sigil-http"
+version = "1.9.0"
+dependencies = [
+ "axum",
+ "metrics",
+ "serde",
+ "serde_json",
+ "shroudb-acl",
+ "shroudb-sigil-core",
+ "shroudb-sigil-engine",
+ "shroudb-sigil-protocol",
+ "shroudb-store",
+ "tower-http",
+ "tracing",
+]
+
+[[package]]
 name = "shroudb-sigil-protocol"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2365,7 +2382,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-server"
-version = "1.8.0"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2386,6 +2403,7 @@ dependencies = [
  "shroudb-server-tcp",
  "shroudb-sigil-core",
  "shroudb-sigil-engine",
+ "shroudb-sigil-http",
  "shroudb-sigil-protocol",
  "shroudb-storage",
  "shroudb-store",
@@ -2395,7 +2413,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "toml",
- "tower-http",
  "tracing",
  "tracing-subscriber",
  "uuid",

@@ -1,8 +1,4 @@
 mod config;
-mod cors;
-mod csrf;
-mod http;
-mod rate_limit;
 mod tcp;
 
 use std::sync::Arc;
@@ -244,7 +240,11 @@ async fn run_server<S: Store + 'static>(
         .await
         .context("failed to bind HTTP")?;
 
-    let http_router = http::router(engine.clone(), token_validator, http::HttpConfig::default());
+    let http_router = shroudb_sigil_http::router(
+        engine.clone(),
+        token_validator,
+        shroudb_sigil_http::HttpConfig::default(),
+    );
     let http_handle = tokio::spawn(async move {
         axum::serve(http_listener, http_router)
             .await

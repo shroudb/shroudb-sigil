@@ -5,13 +5,14 @@ members = [
     "shroudb-sigil-core",
     "shroudb-sigil-engine",
     "shroudb-sigil-protocol",
+    "shroudb-sigil-http",
     "shroudb-sigil-server",
     "shroudb-sigil-client",
     "shroudb-sigil-cli",
 ]
 
 [workspace.package]
-version = "1.8.0"
+version = "1.9.0"
 edition = "2024"
 rust-version = "1.92"
 license = "LicenseRef-Proprietary"
@@ -19,10 +20,11 @@ publish = ["shroudb"]
 
 [workspace.dependencies]
 # Internal crates
-shroudb-sigil-core = { path = "shroudb-sigil-core", version = "1.8.0", registry = "shroudb" }
-shroudb-sigil-engine = { path = "shroudb-sigil-engine", version = "1.8.0", registry = "shroudb" }
-shroudb-sigil-protocol = { path = "shroudb-sigil-protocol", version = "1.8.0", registry = "shroudb" }
-shroudb-sigil-client = { path = "shroudb-sigil-client", version = "1.8.0", registry = "shroudb" }
+shroudb-sigil-core = { path = "shroudb-sigil-core", version = "1.9.0", registry = "shroudb" }
+shroudb-sigil-engine = { path = "shroudb-sigil-engine", version = "1.9.0", registry = "shroudb" }
+shroudb-sigil-protocol = { path = "shroudb-sigil-protocol", version = "1.9.0", registry = "shroudb" }
+shroudb-sigil-http = { path = "shroudb-sigil-http", version = "1.9.0", registry = "shroudb" }
+shroudb-sigil-client = { path = "shroudb-sigil-client", version = "1.9.0", registry = "shroudb" }
 
 # ShrouDB commons (shroudb registry)
 shroudb-client = { version = "1.0.5", registry = "shroudb" }
