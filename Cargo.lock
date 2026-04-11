@@ -278,9 +278,9 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cc"
-version = "1.2.59"
+version = "1.2.60"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7a4d3ec6524d28a329fc53654bbadc9bdd7b0431f5d65f1a56ffb28a1ee5283"
+checksum = "43c5703da9466b66a946814e1adf53ea2c90f10063b86290cc9eb67ce3478a20"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1145,9 +1145,9 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.94"
+version = "0.3.95"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e04e2ef80ce82e13552136fabeef8a5ed1f985a96805761cbb9a2c34e7664d9"
+checksum = "2964e92d1d9dc3364cae4d718d93f227e3abb088e747d92e0395bfdedf1c12ca"
 dependencies = [
  "cfg-if",
  "futures-util",
@@ -1939,9 +1939,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.10"
+version = "0.103.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df33b2b81ac578cabaf06b89b0631153a3f416b0a886e8a7a1707fb51abbd1ef"
+checksum = "20a6af516fea4b20eccceaf166e8aa666ac996208e8a644ce3ef5aa783bc7cd4"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -2140,9 +2140,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-chronicle-core"
-version = "1.5.0"
+version = "1.7.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "e09c316285d231c5c08b2885781a29d5070de846f7cf109513b5ab5ac19ce27b"
+checksum = "d9779cac51cfc9cb74b782b410dd7098b7d0ffa5ae3cbaccc3adddaacea33c5b"
 dependencies = [
  "serde",
  "serde_json",
@@ -2152,9 +2152,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-cipher-blind"
-version = "1.4.9"
+version = "1.4.12"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "fa41d6ac78b94deb48d6c96e9d8649212d08ea6e4593ddb6b5efc00f3d19700d"
+checksum = "6dd0089849613b5903bc29af2c87c73d8782562a2c11bb3e9d417b64dc4751fb"
 dependencies = [
  "base64",
  "hex",
@@ -2169,21 +2169,21 @@ dependencies = [
 
 [[package]]
 name = "shroudb-cipher-client"
-version = "1.4.11"
+version = "1.4.13"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "c1c021e5acd974ad7a7d2f4c16654386660b9d86679188d85d779f74de55bd76"
+checksum = "b836e32e36ba1d0b7a77813cc3687acc11594af6f79bbf2e493faa9be625f48e"
 dependencies = [
  "serde",
  "serde_json",
- "shroudb-client-common 0.1.0",
+ "shroudb-client-common",
  "thiserror",
 ]
 
 [[package]]
 name = "shroudb-cipher-core"
-version = "1.4.11"
+version = "1.4.13"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "045b205c92b7af3640a41b1bb60c57b9b9390baf1843ca48d769c10e4fd10c2a"
+checksum = "59e14b5d1500f6cd59218daf58730ba9c48253b069e844cec4209c44396eb56f"
 dependencies = [
  "base64",
  "hex",
@@ -2196,14 +2196,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "shroudb-client-common"
-version = "0.1.0"
+name = "shroudb-client"
+version = "1.0.6"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "6ba7d69d552424894bc83e9cfe134b13c5c52ed6a753e9f6ce6dd09fa2335677"
+checksum = "0d5822539849814c4763f362c70f6737f3fadaaf3a8b85d16932fd42e555b8c3"
 dependencies = [
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "serde",
  "serde_json",
+ "shroudb-store",
  "thiserror",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
@@ -2243,13 +2249,13 @@ dependencies = [
 
 [[package]]
 name = "shroudb-keep-client"
-version = "1.5.2"
+version = "1.6.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "68d9eeb663ad6b243e4c10d569a8ec35ebfaff48cebeabaae96f917da39969c5"
+checksum = "963b101b26daa9cf2cbaa4c02f3a88f6ba35472d05f33c0ead57306f0926bc6c"
 dependencies = [
  "serde",
  "serde_json",
- "shroudb-client-common 0.1.0",
+ "shroudb-client-common",
  "thiserror",
 ]
 
@@ -2283,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-cli"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2294,18 +2300,18 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-client"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "serde",
  "serde_json",
- "shroudb-client-common 0.2.0",
+ "shroudb-client-common",
  "thiserror",
  "tokio",
 ]
 
 [[package]]
 name = "shroudb-sigil-core"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2314,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-engine"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "argon2",
  "base64",
@@ -2342,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-protocol"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2359,7 +2365,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-server"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2372,6 +2378,7 @@ dependencies = [
  "shroudb-acl",
  "shroudb-cipher-blind",
  "shroudb-cipher-client",
+ "shroudb-client",
  "shroudb-crypto",
  "shroudb-keep-client",
  "shroudb-protocol-wire",
@@ -2432,9 +2439,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-veil-blind"
-version = "1.4.1"
+version = "1.5.2"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "308ced6252213c877a7a7ae658a6a40b66c0e5b3fbe02936ba37ced05cd72793"
+checksum = "cc1592ca577612fb7b63d8417fd0e2f2f32de78687e616e274efa891b752e2b7"
 dependencies = [
  "base64",
  "hex",
@@ -2448,21 +2455,21 @@ dependencies = [
 
 [[package]]
 name = "shroudb-veil-client"
-version = "1.5.1"
+version = "1.7.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "d6f070aaba73f6d1e6ac365eb0daf9b88ffd6c175f761e475aa38f6bdd60909c"
+checksum = "91bb1dab4f6723214e20a701eb683b916074a2ca8ac2f0edc64334c8bbc33b34"
 dependencies = [
  "serde",
  "serde_json",
- "shroudb-client-common 0.1.0",
+ "shroudb-client-common",
  "thiserror",
 ]
 
 [[package]]
 name = "shroudb-veil-core"
-version = "1.5.1"
+version = "1.7.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "5f4ed6b486203ab04cb8920e978a6da4d90d2f9912e6972cb73a8e163531fc6d"
+checksum = "888918bc48607270eaea7820206b380ade2de01b76c32fad0b7292c10bdb44ee"
 dependencies = [
  "serde",
  "serde_json",
@@ -3048,9 +3055,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.117"
+version = "0.2.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0551fc1bb415591e3372d0bc4780db7e587d84e2a7e79da121051c5c4b89d0b0"
+checksum = "0bf938a0bacb0469e83c1e148908bd7d5a6010354cf4fb73279b7447422e3a89"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -3061,9 +3068,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-futures"
-version = "0.4.67"
+version = "0.4.68"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03623de6905b7206edd0a75f69f747f134b7f0a2323392d664448bf2d3c5d87e"
+checksum = "f371d383f2fb139252e0bfac3b81b265689bf45b6874af544ffa4c975ac1ebf8"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -3071,9 +3078,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.117"
+version = "0.2.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fbdf9a35adf44786aecd5ff89b4563a90325f9da0923236f6104e603c7e86be"
+checksum = "eeff24f84126c0ec2db7a449f0c2ec963c6a49efe0698c4242929da037ca28ed"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -3081,9 +3088,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.117"
+version = "0.2.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dca9693ef2bab6d4e6707234500350d8dad079eb508dca05530c85dc3a529ff2"
+checksum = "9d08065faf983b2b80a79fd87d8254c409281cf7de75fc4b773019824196c904"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -3094,9 +3101,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.117"
+version = "0.2.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39129a682a6d2d841b6c429d0c51e5cb0ed1a03829d8b3d1e69a011e62cb3d3b"
+checksum = "5fd04d9e306f1907bd13c6361b5c6bfc7b3b3c095ed3f8a9246390f8dbdee129"
 dependencies = [
  "unicode-ident",
 ]
@@ -3137,9 +3144,9 @@ dependencies = [
 
 [[package]]
 name = "web-sys"
-version = "0.3.94"
+version = "0.3.95"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd70027e39b12f0849461e08ffc50b9cd7688d942c1c8e3c7b22273236b4dd0a"
+checksum = "4f2dfbb17949fa2088e5d39408c48368947b86f7834484e87b73de55bc14d97d"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
