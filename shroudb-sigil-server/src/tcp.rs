@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -9,13 +10,14 @@ use shroudb_sigil_engine::engine::SigilEngine;
 use shroudb_sigil_protocol::commands::{SigilCommand, parse_command};
 use shroudb_sigil_protocol::dispatch::dispatch;
 use shroudb_sigil_protocol::response::SigilResponse;
+use shroudb_store::Store;
 
-pub struct SigilProtocol;
+pub struct SigilProtocol<S>(PhantomData<S>);
 
-impl ServerProtocol for SigilProtocol {
+impl<S: Store + 'static> ServerProtocol for SigilProtocol<S> {
     type Command = SigilCommand;
     type Response = SigilResponse;
-    type Engine = SigilEngine<shroudb_storage::EmbeddedStore>;
+    type Engine = SigilEngine<S>;
 
     fn engine_name(&self) -> &str {
         "sigil"
@@ -65,9 +67,9 @@ impl ServerProtocol for SigilProtocol {
     }
 }
 
-pub async fn run_tcp(
+pub async fn run_tcp<S: Store + 'static>(
     listener: tokio::net::TcpListener,
-    engine: Arc<SigilEngine<shroudb_storage::EmbeddedStore>>,
+    engine: Arc<SigilEngine<S>>,
     token_validator: Option<Arc<dyn TokenValidator>>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
@@ -75,7 +77,7 @@ pub async fn run_tcp(
     shroudb_server_tcp::run_tcp_tls(
         listener,
         engine,
-        Arc::new(SigilProtocol),
+        Arc::new(SigilProtocol::<S>(PhantomData)),
         token_validator,
         shutdown_rx,
         tls_acceptor,

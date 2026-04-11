@@ -12,17 +12,25 @@ use shroudb_sigil_engine::engine::SigilEngine;
 use shroudb_sigil_protocol::commands::SigilCommand;
 use shroudb_sigil_protocol::dispatch::dispatch;
 use shroudb_sigil_protocol::response::SigilResponse;
-use shroudb_storage::EmbeddedStore;
+use shroudb_store::Store;
 
 use crate::cors;
 use crate::csrf::{CsrfConfig, csrf_middleware};
 use crate::rate_limit::{RateLimitConfig, RateLimitState, rate_limit_middleware};
 
 /// Shared state for HTTP handlers.
-#[derive(Clone)]
-struct AppState {
-    engine: Arc<SigilEngine<EmbeddedStore>>,
+struct AppState<S: Store> {
+    engine: Arc<SigilEngine<S>>,
     token_validator: Option<Arc<dyn TokenValidator>>,
+}
+
+impl<S: Store> Clone for AppState<S> {
+    fn clone(&self) -> Self {
+        Self {
+            engine: self.engine.clone(),
+            token_validator: self.token_validator.clone(),
+        }
+    }
 }
 
 /// HTTP router configuration.
@@ -44,8 +52,8 @@ impl Default for HttpConfig {
     }
 }
 
-pub fn router(
-    engine: Arc<SigilEngine<EmbeddedStore>>,
+pub fn router<S: Store + 'static>(
+    engine: Arc<SigilEngine<S>>,
     token_validator: Option<Arc<dyn TokenValidator>>,
     http_config: HttpConfig,
 ) -> Router {
@@ -63,15 +71,21 @@ pub fn router(
     );
 
     let rate_limited = Router::new()
-        .route("/sigil/{schema}/users", post(user_create))
-        .route("/sigil/{schema}/users/import", post(user_import))
-        .route("/sigil/{schema}/verify", post(verify))
-        .route("/sigil/{schema}/lookup", post(user_lookup))
-        .route("/sigil/{schema}/sessions", post(session_create))
-        .route("/sigil/{schema}/sessions/login", post(session_login))
-        .route("/sigil/{schema}/password/change", post(password_change))
-        .route("/sigil/{schema}/password/reset", post(password_reset))
-        .route("/sigil/{schema}/password/import", post(password_import))
+        .route("/sigil/{schema}/users", post(user_create::<S>))
+        .route("/sigil/{schema}/users/import", post(user_import::<S>))
+        .route("/sigil/{schema}/verify", post(verify::<S>))
+        .route("/sigil/{schema}/lookup", post(user_lookup::<S>))
+        .route("/sigil/{schema}/sessions", post(session_create::<S>))
+        .route("/sigil/{schema}/sessions/login", post(session_login::<S>))
+        .route(
+            "/sigil/{schema}/password/change",
+            post(password_change::<S>),
+        )
+        .route("/sigil/{schema}/password/reset", post(password_reset::<S>))
+        .route(
+            "/sigil/{schema}/password/import",
+            post(password_import::<S>),
+        )
         .route_layer(middleware::from_fn_with_state(
             rate_state,
             rate_limit_middleware,
@@ -79,18 +93,24 @@ pub fn router(
         .with_state(state.clone());
 
     let open = Router::new()
-        .route("/sigil/schemas", post(schema_register))
-        .route("/sigil/schemas/{name}", get(schema_get))
-        .route("/sigil/{schema}/users/{id}", get(user_get))
+        .route("/sigil/schemas", post(schema_register::<S>))
+        .route("/sigil/schemas/{name}", get(schema_get::<S>))
+        .route("/sigil/{schema}/users/{id}", get(user_get::<S>))
         .route(
             "/sigil/{schema}/users/{id}",
-            axum::routing::patch(user_update),
+            axum::routing::patch(user_update::<S>),
         )
-        .route("/sigil/{schema}/users/{id}", delete(user_delete))
-        .route("/sigil/{schema}/sessions", delete(session_revoke_body))
-        .route("/sigil/{schema}/sessions/refresh", post(session_refresh))
-        .route("/sigil/{schema}/sessions/{entity_id}", get(session_list))
-        .route("/sigil/{schema}/.well-known/jwks.json", get(jwks))
+        .route("/sigil/{schema}/users/{id}", delete(user_delete::<S>))
+        .route("/sigil/{schema}/sessions", delete(session_revoke_body::<S>))
+        .route(
+            "/sigil/{schema}/sessions/refresh",
+            post(session_refresh::<S>),
+        )
+        .route(
+            "/sigil/{schema}/sessions/{entity_id}",
+            get(session_list::<S>),
+        )
+        .route("/sigil/{schema}/.well-known/jwks.json", get(jwks::<S>))
         .route("/sigil/health", get(health))
         .with_state(state);
 
@@ -104,8 +124,8 @@ pub fn router(
 // ── Auth helper ─────────────────────────────────────────────────────
 
 /// Extract the AuthContext from the Bearer token in the Authorization header.
-fn extract_auth_context(
-    state: &AppState,
+fn extract_auth_context<S: Store>(
+    state: &AppState<S>,
     headers: &HeaderMap,
 ) -> Result<Option<AuthContext>, Box<Response>> {
     let Some(ref validator) = state.token_validator else {
@@ -134,8 +154,8 @@ fn extract_auth_context(
 
 /// Run a SigilCommand through dispatch with ACL checks.
 /// This is the single code path for both TCP and HTTP — ACL is in dispatch.
-async fn run_command(
-    state: &AppState,
+async fn run_command<S: Store + 'static>(
+    state: &AppState<S>,
     headers: &HeaderMap,
     cmd: SigilCommand,
 ) -> Result<SigilResponse, Response> {
@@ -198,8 +218,8 @@ fn err_response(status: StatusCode, msg: &str) -> Response {
 // Each handler builds a SigilCommand and routes through run_command.
 // ACL checks happen in dispatch — handlers don't check auth themselves.
 
-async fn schema_register(
-    State(state): State<AppState>,
+async fn schema_register<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Json(schema): Json<shroudb_sigil_core::schema::Schema>,
 ) -> Response {
@@ -210,8 +230,8 @@ async fn schema_register(
     }
 }
 
-async fn schema_get(
-    State(state): State<AppState>,
+async fn schema_get<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Response {
@@ -227,8 +247,8 @@ struct CreateUserBody {
     fields: std::collections::HashMap<String, serde_json::Value>,
 }
 
-async fn user_create(
-    State(state): State<AppState>,
+async fn user_create<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<CreateUserBody>,
@@ -256,8 +276,8 @@ async fn user_create(
     }
 }
 
-async fn user_import(
-    State(state): State<AppState>,
+async fn user_import<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<CreateUserBody>,
@@ -291,8 +311,8 @@ struct UserPath {
     id: String,
 }
 
-async fn user_get(
-    State(state): State<AppState>,
+async fn user_get<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(path): Path<UserPath>,
 ) -> Response {
@@ -311,8 +331,8 @@ struct UpdateUserBody {
     fields: std::collections::HashMap<String, serde_json::Value>,
 }
 
-async fn user_update(
-    State(state): State<AppState>,
+async fn user_update<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(path): Path<UserPath>,
     Json(body): Json<UpdateUserBody>,
@@ -328,8 +348,8 @@ async fn user_update(
     }
 }
 
-async fn user_delete(
-    State(state): State<AppState>,
+async fn user_delete<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(path): Path<UserPath>,
 ) -> Response {
@@ -349,8 +369,8 @@ struct VerifyBody {
     password: String,
 }
 
-async fn verify(
-    State(state): State<AppState>,
+async fn verify<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<VerifyBody>,
@@ -372,8 +392,8 @@ struct LookupBody {
     value: String,
 }
 
-async fn user_lookup(
-    State(state): State<AppState>,
+async fn user_lookup<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<LookupBody>,
@@ -398,8 +418,8 @@ struct FieldLoginBody {
     metadata: Option<serde_json::Value>,
 }
 
-async fn session_login(
-    State(state): State<AppState>,
+async fn session_login<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<FieldLoginBody>,
@@ -425,8 +445,8 @@ struct LoginBody {
     metadata: Option<serde_json::Value>,
 }
 
-async fn session_create(
-    State(state): State<AppState>,
+async fn session_create<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<LoginBody>,
@@ -448,8 +468,8 @@ struct RefreshBody {
     refresh_token: String,
 }
 
-async fn session_refresh(
-    State(state): State<AppState>,
+async fn session_refresh<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<RefreshBody>,
@@ -470,8 +490,8 @@ struct RevokeBody {
     entity_id: Option<String>,
 }
 
-async fn session_revoke_body(
-    State(state): State<AppState>,
+async fn session_revoke_body<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<RevokeBody>,
@@ -498,8 +518,8 @@ struct SessionListPath {
     entity_id: String,
 }
 
-async fn session_list(
-    State(state): State<AppState>,
+async fn session_list<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(path): Path<SessionListPath>,
 ) -> Response {
@@ -520,8 +540,8 @@ struct ChangePasswordBody {
     new_password: String,
 }
 
-async fn password_change(
-    State(state): State<AppState>,
+async fn password_change<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<ChangePasswordBody>,
@@ -544,8 +564,8 @@ struct ResetPasswordBody {
     new_password: String,
 }
 
-async fn password_reset(
-    State(state): State<AppState>,
+async fn password_reset<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<ResetPasswordBody>,
@@ -567,8 +587,8 @@ struct ImportPasswordBody {
     hash: String,
 }
 
-async fn password_import(
-    State(state): State<AppState>,
+async fn password_import<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(schema): Path<String>,
     Json(body): Json<ImportPasswordBody>,
@@ -585,8 +605,8 @@ async fn password_import(
     }
 }
 
-async fn jwks(
-    State(state): State<AppState>,
+async fn jwks<S: Store + 'static>(
+    State(state): State<AppState<S>>,
     headers: HeaderMap,
     Path(schema): Path<String>,
 ) -> Response {

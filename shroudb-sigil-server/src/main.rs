@@ -16,8 +16,9 @@ use shroudb_storage::{
     ChainedMasterKeySource, EnvMasterKey, EphemeralKey, FileMasterKey, MasterKeySource,
     StorageEngineConfig,
 };
+use shroudb_store::Store;
 
-use crate::config::{load_config, parse_duration_secs};
+use crate::config::{SigilServerConfig, load_config, parse_duration_secs};
 
 #[derive(Parser)]
 #[command(name = "shroudb-sigil", about = "Sigil credential envelope engine")]
@@ -80,34 +81,53 @@ async fn main() -> anyhow::Result<()> {
         cfg.server.http_bind = bind.parse().context("invalid HTTP bind address")?;
     }
 
-    // Store mode validation
-    if cfg.store.mode == "remote" {
-        anyhow::bail!(
-            "remote store mode not yet implemented (uri: {:?})",
-            cfg.store.uri
-        );
+    // Store: embedded or remote
+    match cfg.store.mode.as_str() {
+        "embedded" => {
+            // Master key
+            let key_source: Box<dyn MasterKeySource> = Box::new(ChainedMasterKeySource::new(vec![
+                Box::new(EnvMasterKey::new()),
+                Box::new(FileMasterKey::new()),
+                Box::new(EphemeralKey),
+            ]));
+
+            // Storage engine
+            let engine_config = StorageEngineConfig {
+                data_dir: cfg.store.data_dir.clone(),
+                ..Default::default()
+            };
+            let storage_engine =
+                shroudb_storage::StorageEngine::open(engine_config, key_source.as_ref())
+                    .await
+                    .context("failed to open storage engine")?;
+            let store = Arc::new(shroudb_storage::EmbeddedStore::new(
+                Arc::new(storage_engine),
+                "sigil",
+            ));
+            run_server(cfg, store).await
+        }
+        "remote" => {
+            let uri = cfg
+                .store
+                .uri
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("remote mode requires store.uri"))?;
+            tracing::info!(uri, "connecting to remote store");
+            let store = Arc::new(
+                shroudb_client::RemoteStore::connect(uri)
+                    .await
+                    .context("failed to connect to remote store")?,
+            );
+            run_server(cfg, store).await
+        }
+        other => anyhow::bail!("unknown store mode: {other}"),
     }
+}
 
-    // Master key
-    let key_source: Box<dyn MasterKeySource> = Box::new(ChainedMasterKeySource::new(vec![
-        Box::new(EnvMasterKey::new()),
-        Box::new(FileMasterKey::new()),
-        Box::new(EphemeralKey),
-    ]));
-
-    // Storage engine
-    let engine_config = StorageEngineConfig {
-        data_dir: cfg.store.data_dir.clone(),
-        ..Default::default()
-    };
-    let storage_engine = shroudb_storage::StorageEngine::open(engine_config, key_source.as_ref())
-        .await
-        .context("failed to open storage engine")?;
-    let store = Arc::new(shroudb_storage::EmbeddedStore::new(
-        Arc::new(storage_engine),
-        "sigil",
-    ));
-
+async fn run_server<S: Store + 'static>(
+    cfg: SigilServerConfig,
+    store: Arc<S>,
+) -> anyhow::Result<()> {
     // Sigil engine
     let jwt_algorithm = parse_jwt_algorithm(&cfg.jwt.jwt_algorithm)?;
     let sigil_config = SigilConfig {
@@ -116,6 +136,7 @@ async fn main() -> anyhow::Result<()> {
         refresh_ttl_secs: parse_duration_secs(&cfg.jwt.refresh_ttl)?,
         ..Default::default()
     };
+
     // Capabilities: connect to external engines
     let mut capabilities = Capabilities::default();
 

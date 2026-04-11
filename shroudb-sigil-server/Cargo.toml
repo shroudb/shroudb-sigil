@@ -17,6 +17,7 @@ shroudb-sigil-engine.workspace = true
 shroudb-sigil-protocol.workspace = true
 shroudb-acl.workspace = true
 shroudb-cipher-client.workspace = true
+shroudb-client.workspace = true
 shroudb-store.workspace = true
 shroudb-storage.workspace = true
 shroudb-veil-client.workspace = true
