@@ -22,7 +22,7 @@ jobs:
       cli_binary: "shroudb-sigil-cli"
       docker_server_target: "shroudb-sigil"
       docker_cli_target: "shroudb-sigil-cli"
-      crates: "shroudb-sigil-core,shroudb-sigil-engine,shroudb-sigil-protocol,shroudb-sigil-client,shroudb-sigil-server,shroudb-sigil-cli"
+      crates: "shroudb-sigil-core,shroudb-sigil-engine,shroudb-sigil-protocol,shroudb-sigil-http,shroudb-sigil-client,shroudb-sigil-server,shroudb-sigil-cli"
     secrets:
       REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
       GH_PAT: ${{ secrets.GH_PAT }}
