@@ -88,6 +88,18 @@ impl Schema {
             .collect()
     }
 
+    /// Returns whether lockout enforcement is enabled for the named field.
+    /// Returns `true` (the safe default) if the field is not found or is not a
+    /// credential field — non-credential fields cannot be verified, so the
+    /// answer is irrelevant.
+    pub fn field_lockout(&self, field_name: &str) -> bool {
+        self.fields
+            .iter()
+            .find(|f| f.name == field_name)
+            .map(|f| f.annotations.lockout)
+            .unwrap_or(true)
+    }
+
     /// Returns the single credential field name, or an error if zero or
     /// multiple credential fields exist. Used by the `USER` command sugar
     /// where the credential field is inferred from the schema.
@@ -185,6 +197,12 @@ impl FieldAnnotations {
             )));
         }
 
+        if !self.lockout && !self.credential {
+            return Err(SigilError::SchemaValidation(format!(
+                "field '{field_name}': lockout=false is only valid on credential fields"
+            )));
+        }
+
         Ok(())
     }
 }
@@ -203,7 +221,7 @@ pub enum FieldType {
 ///
 /// These drive the field routing: each annotation maps to a specific
 /// cryptographic treatment and potentially a specific engine.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldAnnotations {
     /// Hash with Argon2id. Supports verify, change, lockout.
     /// At most one credential field per schema.
@@ -233,6 +251,30 @@ pub struct FieldAnnotations {
     /// caller-provided extra_claims for the same key.
     #[serde(default)]
     pub claim: bool,
+
+    /// Enforce lockout on repeated verify failures for this credential field.
+    ///
+    /// Default `true`. Only meaningful when `credential = true`. Set to `false`
+    /// for machine-auth schemas (API keys, service tokens) where lockout would
+    /// let an attacker who guesses a valid `entity_id` deny service to a tenant
+    /// by hammering bad secrets. Leave `true` for human-auth schemas (passwords)
+    /// where brute-force mitigation is the goal.
+    #[serde(default = "default_true")]
+    pub lockout: bool,
+}
+
+impl Default for FieldAnnotations {
+    fn default() -> Self {
+        Self {
+            credential: false,
+            pii: false,
+            searchable: false,
+            secret: false,
+            index: false,
+            claim: false,
+            lockout: true,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -489,5 +531,47 @@ mod tests {
         let parsed: Schema = serde_json::from_str(json).unwrap();
         assert!(!parsed.fields[0].annotations.claim);
         assert!(parsed.claim_fields().is_empty());
+    }
+
+    #[test]
+    fn lockout_defaults_true() {
+        let a = FieldAnnotations::default();
+        assert!(a.lockout);
+    }
+
+    #[test]
+    fn lockout_off_on_credential_valid() {
+        let s = schema(
+            "api_keys",
+            vec![field("key_secret", |a| {
+                a.credential = true;
+                a.lockout = false;
+            })],
+        );
+        assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn lockout_off_on_non_credential_rejected() {
+        let s = schema(
+            "myapp",
+            vec![
+                field("password", |a| a.credential = true),
+                field("role", |a| {
+                    a.index = true;
+                    a.lockout = false;
+                }),
+            ],
+        );
+        let err = s.validate().unwrap_err();
+        assert!(err.to_string().contains("lockout=false"));
+    }
+
+    #[test]
+    fn lockout_defaults_true_on_deserialize() {
+        // Simulate a schema stored before the lockout annotation existed
+        let json = r#"{"name":"legacy","fields":[{"name":"password","field_type":"string","annotations":{"credential":true}}]}"#;
+        let parsed: Schema = serde_json::from_str(json).unwrap();
+        assert!(parsed.fields[0].annotations.lockout);
     }
 }

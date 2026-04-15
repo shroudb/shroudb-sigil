@@ -137,6 +137,11 @@ impl<S: Store> CredentialManager<S> {
 
     /// Verify a credential. Handles lockout and transparent rehash.
     ///
+    /// `enforce_lockout` controls whether failed attempts increment a counter
+    /// and whether `locked_until` blocks further attempts. Pass `false` for
+    /// machine-auth credentials (API keys) where lockout is a denial-of-service
+    /// vector. Pass `true` for human-auth credentials (passwords).
+    ///
     /// Returns `Ok(true)` on success, `Err(AccountLocked)` if locked,
     /// `Err(VerificationFailed)` on wrong password.
     pub async fn verify(
@@ -145,6 +150,7 @@ impl<S: Store> CredentialManager<S> {
         entity_id: &str,
         field_name: &str,
         plaintext: &str,
+        enforce_lockout: bool,
     ) -> Result<bool, SigilError> {
         let ns = credentials_namespace(schema);
         let store_key = credential_store_key(entity_id, field_name);
@@ -158,8 +164,10 @@ impl<S: Store> CredentialManager<S> {
         let mut record: CredentialRecord = serde_json::from_slice(&entry.value)
             .map_err(|e| SigilError::Internal(e.to_string()))?;
 
-        // Check lockout
-        if let Some(locked_until) = record.locked_until {
+        // Check lockout (only when enforced — disabling unlocks immediately).
+        if enforce_lockout
+            && let Some(locked_until) = record.locked_until
+        {
             let current = now();
             if current < locked_until {
                 return Err(SigilError::AccountLocked {
@@ -190,7 +198,7 @@ impl<S: Store> CredentialManager<S> {
                 record.algorithm = PasswordAlgorithm::Argon2id;
                 tracing::info!(entity_id, field_name, "transparent rehash to argon2id");
             }
-        } else {
+        } else if enforce_lockout {
             record.failed_attempts += 1;
             if record.failed_attempts >= self.policy.max_failed_attempts {
                 record.locked_until = Some(now() + self.policy.lockout_duration_secs);
@@ -213,6 +221,9 @@ impl<S: Store> CredentialManager<S> {
     }
 
     /// Change credential (requires old value verification).
+    ///
+    /// `enforce_lockout` is forwarded to the inner verify call. Pass the same
+    /// value the schema's credential field annotation declares.
     pub async fn change_credential(
         &self,
         schema: &str,
@@ -220,12 +231,19 @@ impl<S: Store> CredentialManager<S> {
         field_name: &str,
         old_plaintext: &str,
         new_plaintext: &str,
+        enforce_lockout: bool,
     ) -> Result<(), SigilError> {
         self.validate_password_length(new_plaintext)?;
 
         // Verify old credential (this also handles lockout)
-        self.verify(schema, entity_id, field_name, old_plaintext)
-            .await?;
+        self.verify(
+            schema,
+            entity_id,
+            field_name,
+            old_plaintext,
+            enforce_lockout,
+        )
+        .await?;
 
         // Hash new credential
         let _permit = self
@@ -439,7 +457,7 @@ mod tests {
             .await
             .unwrap();
         let valid = mgr
-            .verify("myapp", "user1", "password", "correcthorse")
+            .verify("myapp", "user1", "password", "correcthorse", true)
             .await
             .unwrap();
         assert!(valid);
@@ -452,7 +470,7 @@ mod tests {
             .await
             .unwrap();
         let err = mgr
-            .verify("myapp", "user1", "password", "wrongpassword")
+            .verify("myapp", "user1", "password", "wrongpassword", true)
             .await;
         assert!(err.is_err());
     }
@@ -479,15 +497,71 @@ mod tests {
 
         // Exhaust attempts (default: 5)
         for _ in 0..5 {
-            let _ = mgr.verify("myapp", "user1", "password", "wrong").await;
+            let _ = mgr
+                .verify("myapp", "user1", "password", "wrong", true)
+                .await;
         }
 
         // Next attempt should be locked
         let err = mgr
-            .verify("myapp", "user1", "password", "correcthorse")
+            .verify("myapp", "user1", "password", "correcthorse", true)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("locked"));
+    }
+
+    #[tokio::test]
+    async fn no_lockout_when_disabled() {
+        let (_store, mgr) = setup().await;
+        mgr.set_credential("myapp", "key_42", "key_secret", "correcthorse")
+            .await
+            .unwrap();
+
+        // Far exceed the default attempt threshold — must never lock.
+        for _ in 0..20 {
+            let err = mgr
+                .verify("myapp", "key_42", "key_secret", "wrong", false)
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("verification failed"),
+                "expected verification failure, got: {err}"
+            );
+        }
+
+        // Correct secret still verifies — no lock ever tripped.
+        assert!(
+            mgr.verify("myapp", "key_42", "key_secret", "correcthorse", false)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn lockout_disabled_unlocks_existing_lock() {
+        // A record locked under enforce_lockout=true should be reachable when
+        // the schema is later switched to lockout=false.
+        let (_store, mgr) = setup().await;
+        mgr.set_credential("myapp", "user1", "password", "correcthorse")
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            let _ = mgr
+                .verify("myapp", "user1", "password", "wrong", true)
+                .await;
+        }
+        assert!(
+            mgr.verify("myapp", "user1", "password", "correcthorse", true)
+                .await
+                .is_err()
+        );
+
+        // Now flip the flag — the prior lockout state is ignored.
+        assert!(
+            mgr.verify("myapp", "user1", "password", "correcthorse", false)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -496,19 +570,26 @@ mod tests {
         mgr.set_credential("myapp", "user1", "password", "oldpassword")
             .await
             .unwrap();
-        mgr.change_credential("myapp", "user1", "password", "oldpassword", "newpassword")
-            .await
-            .unwrap();
+        mgr.change_credential(
+            "myapp",
+            "user1",
+            "password",
+            "oldpassword",
+            "newpassword",
+            true,
+        )
+        .await
+        .unwrap();
 
         // Old credential fails
         assert!(
-            mgr.verify("myapp", "user1", "password", "oldpassword")
+            mgr.verify("myapp", "user1", "password", "oldpassword", true)
                 .await
                 .is_err()
         );
         // New credential works
         assert!(
-            mgr.verify("myapp", "user1", "password", "newpassword")
+            mgr.verify("myapp", "user1", "password", "newpassword", true)
                 .await
                 .is_ok()
         );
@@ -523,10 +604,12 @@ mod tests {
 
         // Lock the account
         for _ in 0..5 {
-            let _ = mgr.verify("myapp", "user1", "password", "wrong").await;
+            let _ = mgr
+                .verify("myapp", "user1", "password", "wrong", true)
+                .await;
         }
         assert!(
-            mgr.verify("myapp", "user1", "password", "original")
+            mgr.verify("myapp", "user1", "password", "original", true)
                 .await
                 .is_err()
         );
@@ -538,7 +621,7 @@ mod tests {
 
         // Should work now (lockout cleared)
         assert!(
-            mgr.verify("myapp", "user1", "password", "newpassword")
+            mgr.verify("myapp", "user1", "password", "newpassword", true)
                 .await
                 .is_ok()
         );
@@ -558,7 +641,7 @@ mod tests {
 
         // Verify works
         assert!(
-            mgr.verify("myapp", "user1", "password", "imported_pw")
+            mgr.verify("myapp", "user1", "password", "imported_pw", true)
                 .await
                 .is_ok()
         );
@@ -578,7 +661,7 @@ mod tests {
     async fn verify_nonexistent_entity() {
         let (_store, mgr) = setup().await;
         let err = mgr
-            .verify("myapp", "nope", "password", "password")
+            .verify("myapp", "nope", "password", "password", true)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not found"));
@@ -596,19 +679,25 @@ mod tests {
 
         // Each verifies independently
         assert!(
-            mgr.verify("myapp", "user1", "password", "correcthorse")
+            mgr.verify("myapp", "user1", "password", "correcthorse", true)
                 .await
                 .is_ok()
         );
         assert!(
-            mgr.verify("myapp", "user1", "recovery_key", "my-recovery-key-123")
-                .await
-                .is_ok()
+            mgr.verify(
+                "myapp",
+                "user1",
+                "recovery_key",
+                "my-recovery-key-123",
+                true
+            )
+            .await
+            .is_ok()
         );
 
         // Cross-verify fails
         assert!(
-            mgr.verify("myapp", "user1", "password", "my-recovery-key-123")
+            mgr.verify("myapp", "user1", "password", "my-recovery-key-123", true)
                 .await
                 .is_err()
         );

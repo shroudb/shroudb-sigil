@@ -178,8 +178,10 @@ impl<S: Store> SigilEngine<S> {
         field_name: &str,
         value: &str,
     ) -> Result<bool, SigilError> {
+        let schema = self.schemas.get(schema_name).await?;
+        let enforce_lockout = schema.field_lockout(field_name);
         self.credentials
-            .verify(schema_name, entity_id, field_name, value)
+            .verify(schema_name, entity_id, field_name, value, enforce_lockout)
             .await
     }
 
@@ -292,8 +294,15 @@ impl<S: Store> SigilEngine<S> {
         // Verify credentials first (infers credential field from schema)
         let schema = self.schemas.get(schema_name).await?;
         let cred_field = schema.credential_field_name()?;
+        let enforce_lockout = schema.field_lockout(cred_field);
         self.credentials
-            .verify(schema_name, entity_id, cred_field, password)
+            .verify(
+                schema_name,
+                entity_id,
+                cred_field,
+                password,
+                enforce_lockout,
+            )
             .await?;
 
         let merged = self
@@ -357,8 +366,17 @@ impl<S: Store> SigilEngine<S> {
         old_value: &str,
         new_value: &str,
     ) -> Result<(), SigilError> {
+        let schema = self.schemas.get(schema_name).await?;
+        let enforce_lockout = schema.field_lockout(field_name);
         self.credentials
-            .change_credential(schema_name, entity_id, field_name, old_value, new_value)
+            .change_credential(
+                schema_name,
+                entity_id,
+                field_name,
+                old_value,
+                new_value,
+                enforce_lockout,
+            )
             .await
     }
 

@@ -63,6 +63,7 @@ SCHEMA REGISTER myapp {"fields":[...]}
 | `secret: true` | Versioned secret with rotation | Keep engine |
 | `index: true` | Plaintext lookup index | — |
 | `claim: true` | Auto-include in JWT claims on session create/refresh | — |
+| `lockout: false` | Disable failed-attempt lockout on a credential field. Default `true` | `credential: true` |
 | (none) | Stored as-is | — |
 
 ### Validation rules
@@ -72,6 +73,7 @@ SCHEMA REGISTER myapp {"fields":[...]}
 - `credential` and `pii` are mutually exclusive (credentials are hashed, not encrypted)
 - `credential` and `secret` are mutually exclusive
 - `claim` is mutually exclusive with `credential`, `pii`, and `secret` (only index/inert field values can be included in JWTs)
+- `lockout: false` is only valid on credential fields (lockout is meaningless without verify)
 - Field names: alphanumeric + underscores only
 
 ### Capability requirements
@@ -328,6 +330,25 @@ Accepts pre-hashed credentials in Argon2id, Argon2i, Argon2d, bcrypt, or scrypt 
 ## Account Lockout
 
 After a configurable number of failed credential verification attempts (default: 5), the credential is locked for a configurable duration (default: 15 minutes). Correct credential during lockout still returns locked. Credential reset clears lockout. Lockout is per credential field — locking the `password` field doesn't affect the `recovery_key` field.
+
+### Disabling lockout per field (`lockout: false`)
+
+Lockout is on by default for every credential field. It can be disabled per field by setting `lockout: false` on the field's annotations. When disabled, failed attempts are not counted, `locked_until` is never set, and `ACCOUNT_LOCKED` is never returned for that field — verify simply returns `VERIFICATION_FAILED` on a wrong value, regardless of how many times it's been wrong.
+
+**When to leave it on (the default):** human-auth credentials — passwords, PINs, recovery keys typed by a person. Lockout mitigates online brute-force against a guessable secret.
+
+**When to turn it off:** machine-auth credentials — API keys, service tokens, signing secrets where the entity ID is the public half of the key (e.g., `key_id` + `key_secret`). With lockout on, an attacker who learns a tenant's `key_id` can lock that tenant out of production by hammering bad secrets against the verify endpoint. With lockout off, brute-force protection comes from the secret's entropy (a 32-byte random secret is not feasibly guessable) and from the rate-limiting layer in front of Sigil — not from the lockout state.
+
+If `lockout: false` is set on a non-credential field, schema registration fails with `SCHEMA_VALIDATION` — lockout is meaningless without a verify path.
+
+```sh
+# API-key schema: high-entropy secret, lockout disabled
+SCHEMA REGISTER api_keys '{"fields":[
+  {"name":"key_secret", "field_type":"string", "annotations":{"credential":true, "lockout":false}},
+  {"name":"client_id",  "field_type":"string", "annotations":{"index":true, "claim":true}},
+  {"name":"scopes",     "field_type":"string", "annotations":{"claim":true}}
+]}'
+```
 
 ## Envelope Recovery
 

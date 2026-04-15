@@ -1065,7 +1065,7 @@ mod tests {
         // Credential was stored via CredentialManager — verify it works
         let cred_mgr = CredentialManager::new(store, PasswordPolicy::default());
         let valid = cred_mgr
-            .verify("myapp", "user1", "password", "correcthorse")
+            .verify("myapp", "user1", "password", "correcthorse", true)
             .await
             .unwrap();
         assert!(valid);

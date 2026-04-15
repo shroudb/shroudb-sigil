@@ -6,7 +6,7 @@ Applications that handle credentials face a common problem: every field in a cre
 
 **Sigil is a credential envelope engine.** You define a schema — the shape of your credential record — with annotations that describe what each field is. Sigil reads those annotations and applies the correct cryptographic treatment automatically:
 
-- **Credentials** (passwords, API keys, recovery keys) are hashed with Argon2id, with lockout after failed attempts
+- **Credentials** (passwords, API keys, recovery keys) are hashed with Argon2id. Lockout on failed attempts is enabled by default and can be disabled per credential field for machine-auth (API keys, service tokens) where lockout would be a denial-of-service vector
 - **PII** (email, phone, address) is encrypted at rest via the Cipher engine
 - **Searchable PII** gets encrypted storage plus a blind index for querying
 - **Secrets** (third-party tokens) get versioned storage with rotation via Keep
@@ -50,7 +50,7 @@ Sigil is a **credential envelope engine** — not an identity provider, not an a
 ### Operational Model
 
 - **Authentication:** JWT access tokens (ES256, configurable TTL) with family-based refresh token rotation and reuse detection.
-- **Credential lifecycle:** Argon2id hashing, transparent rehash on verify (imported bcrypt/scrypt hashes upgraded automatically), account lockout after failed attempts. Per-field credential storage supports multiple credential fields per entity.
+- **Credential lifecycle:** Argon2id hashing, transparent rehash on verify (imported bcrypt/scrypt hashes upgraded automatically), account lockout after failed attempts (opt-out per credential field via `lockout: false` for API-key / machine-auth schemas). Per-field credential storage supports multiple credential fields per entity.
 - **Key rotation:** Signing keys follow an active → draining → retired lifecycle. JWKS endpoint for external verification.
 - **Durability:** ShrouDB v1 Store trait for persistence. Embedded mode (in-process ShrouDB) or remote mode (TCP to ShrouDB server).
 - **Security:** Passwords and private keys zeroed from memory after use. Core dumps disabled. CORS, CSRF, and rate limiting on HTTP. Fail-closed on missing capabilities.

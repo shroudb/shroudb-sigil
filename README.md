@@ -28,6 +28,7 @@ Then `USER CREATE myapp alice {"email":"a@b.com","password":"secret","org_id":"a
 | `secret` | Versioned secret storage | Keep |
 | `index` | Plaintext lookup index | Sigil (internal) |
 | `claim` | Auto-include in JWT claims on login/refresh | Sigil (internal) |
+| `lockout: false` (on a `credential` field) | Disable failed-attempt lockout. Use for API-key / machine-auth schemas where lockout is a denial-of-service vector | Sigil (internal) |
 
 The developer's API surface is "store this user shape" and "verify this credential." Sigil routes fields to the right engines internally.
 

@@ -47,6 +47,15 @@ pub struct SchemaFieldConfig {
     pub index: bool,
     #[serde(default)]
     pub claim: bool,
+    /// Enforce lockout on repeated verify failures. Defaults to `true`.
+    /// Set to `false` for machine-auth credentials (API keys) where lockout
+    /// is a denial-of-service vector.
+    #[serde(default = "default_true")]
+    pub lockout: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl SchemaConfig {
@@ -73,6 +82,7 @@ impl SchemaConfig {
                         secret: f.secret,
                         index: f.index,
                         claim: f.claim,
+                        lockout: f.lockout,
                     },
                     required: true,
                 })

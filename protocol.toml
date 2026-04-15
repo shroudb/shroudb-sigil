@@ -57,7 +57,7 @@ description = "Credential verification failed (wrong password)"
 http_equiv = 401
 
 [error_codes.ACCOUNT_LOCKED]
-description = "Account locked after too many failed attempts"
+description = "Account locked after too many failed attempts. Only emitted for credential fields with the default lockout=true annotation."
 http_equiv = 429
 
 [error_codes.INVALID_TOKEN]
@@ -440,6 +440,7 @@ fields = [
     { name = "secret", type = "boolean", default = false, description = "Versioned storage via Keep" },
     { name = "index", type = "boolean", default = false, description = "Plaintext lookup index" },
     { name = "claim", type = "boolean", default = false, description = "Include in JWT claims on session create/refresh. Mutually exclusive with credential, pii, secret." },
+    { name = "lockout", type = "boolean", default = true, description = "Enforce lockout on repeated verify failures. Only valid on credential fields. Set to false for machine-auth (API keys) where lockout is a denial-of-service vector; leave true for human-auth (passwords) where brute-force mitigation is the goal. When false, ACCOUNT_LOCKED is never returned for this field." },
 ]
 
 [types.SessionRecord]
