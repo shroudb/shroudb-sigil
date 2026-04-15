@@ -165,9 +165,7 @@ impl<S: Store> CredentialManager<S> {
             .map_err(|e| SigilError::Internal(e.to_string()))?;
 
         // Check lockout (only when enforced — disabling unlocks immediately).
-        if enforce_lockout
-            && let Some(locked_until) = record.locked_until
-        {
+        if enforce_lockout && let Some(locked_until) = record.locked_until {
             let current = now();
             if current < locked_until {
                 return Err(SigilError::AccountLocked {
