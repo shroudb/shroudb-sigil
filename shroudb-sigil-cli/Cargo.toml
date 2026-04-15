@@ -13,8 +13,17 @@ path = "src/main.rs"
 
 [dependencies]
 shroudb-sigil-client.workspace = true
+shroudb-sigil-core.workspace = true
+shroudb-store.workspace = true
+shroudb-storage.workspace = true
 
 tokio.workspace = true
 clap.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+shroudb-storage = { workspace = true, features = ["testing"] }

@@ -30,8 +30,8 @@ async fn http_full_auth_lifecycle() {
         .json(&serde_json::json!({
             "name": "myapp",
             "fields": [
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
-                {"name": "org", "field_type": "string", "annotations": {"index": true}},
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
+                {"name": "org", "field_type": "string", "kind": {"type": "index"}},
                 {"name": "display_name", "field_type": "string"}
             ]
         }))
@@ -223,8 +223,8 @@ async fn http_user_import_with_prehashed_password() {
         .json(&serde_json::json!({
             "name": "import-test",
             "fields": [
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
-                {"name": "org", "field_type": "string", "annotations": {"index": true}}
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
+                {"name": "org", "field_type": "string", "kind": {"type": "index"}}
             ]
         }))
         .send()
@@ -333,7 +333,7 @@ async fn http_password_change_and_reset() {
         .post(server.http_url("/sigil/schemas"))
         .json(&serde_json::json!({
             "name": "pwtest",
-            "fields": [{"name": "password", "field_type": "string", "annotations": {"credential": true}}]
+            "fields": [{"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}}]
         }))
         .send()
         .await
@@ -435,18 +435,6 @@ async fn http_error_responses() {
         .unwrap();
     assert_eq!(resp.status(), 409, "duplicate schema should be conflict");
 
-    // Invalid schema (credential + pii on same field)
-    let resp = client
-        .post(server.http_url("/sigil/schemas"))
-        .json(&serde_json::json!({
-            "name": "bad",
-            "fields": [{"name": "f", "field_type": "string", "annotations": {"credential": true, "pii": true}}]
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 400, "invalid schema should be bad request");
-
     // User not found
     let resp = client
         .get(server.http_url("/sigil/dup/users/nobody"))
@@ -460,7 +448,7 @@ async fn http_error_responses() {
         .post(server.http_url("/sigil/schemas"))
         .json(&serde_json::json!({
             "name": "pii-app",
-            "fields": [{"name": "email", "field_type": "string", "annotations": {"pii": true}}]
+            "fields": [{"name": "email", "field_type": "string", "kind": {"type": "pii"}}]
         }))
         .send()
         .await
@@ -492,7 +480,7 @@ async fn http_account_lockout() {
         .post(server.http_url("/sigil/schemas"))
         .json(&serde_json::json!({
             "name": "lock",
-            "fields": [{"name": "password", "field_type": "string", "annotations": {"credential": true}}]
+            "fields": [{"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}}]
         }))
         .send()
         .await
@@ -551,7 +539,7 @@ async fn tcp_health_and_schema_flow() {
             "SCHEMA",
             "REGISTER",
             "tcpapp",
-            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+            r#"{"fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},{"name":"org","field_type":"string","kind":{"type":"index"}}]}"#,
         ],
     )
     .await;
@@ -744,8 +732,8 @@ async fn acl_valid_admin_token_accepted() {
         .json(&serde_json::json!({
             "name": "myapp",
             "fields": [
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
-                {"name": "org", "field_type": "string", "annotations": {"index": true}}
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
+                {"name": "org", "field_type": "string", "kind": {"type": "index"}}
             ]
         }))
         .send()
@@ -819,8 +807,8 @@ async fn acl_read_only_cannot_write() {
         .json(&serde_json::json!({
             "name": "myapp",
             "fields": [
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
-                {"name": "org", "field_type": "string", "annotations": {"index": true}}
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
+                {"name": "org", "field_type": "string", "kind": {"type": "index"}}
             ]
         }))
         .send()
@@ -882,7 +870,7 @@ async fn acl_jwks_is_public_even_with_auth() {
         .header("Authorization", "Bearer admin-token")
         .json(&serde_json::json!({
             "name": "myapp",
-            "fields": [{"name": "password", "field_type": "string", "annotations": {"credential": true}}]
+            "fields": [{"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}}]
         }))
         .send()
         .await
@@ -958,8 +946,8 @@ async fn platform_token_decrypts_pii_non_platform_gets_redacted() {
         .json(&serde_json::json!({
             "name": "acl-pii",
             "fields": [
-                {"name": "email", "field_type": "string", "annotations": {"pii": true}},
-                {"name": "org", "field_type": "string", "annotations": {"index": true}}
+                {"name": "email", "field_type": "string", "kind": {"type": "pii"}},
+                {"name": "org", "field_type": "string", "kind": {"type": "index"}}
             ]
         }))
         .send()
@@ -1046,9 +1034,9 @@ async fn cipher_pii_field_encrypt_decrypt_roundtrip() {
         .json(&serde_json::json!({
             "name": "pii-test",
             "fields": [
-                {"name": "email", "field_type": "string", "annotations": {"pii": true}},
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
-                {"name": "org", "field_type": "string", "annotations": {"index": true}}
+                {"name": "email", "field_type": "string", "kind": {"type": "pii"}},
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
+                {"name": "org", "field_type": "string", "kind": {"type": "index"}}
             ]
         }))
         .send()
@@ -1178,8 +1166,8 @@ async fn cipher_veil_searchable_pii_roundtrip() {
         .json(&serde_json::json!({
             "name": "search-test",
             "fields": [
-                {"name": "email", "field_type": "string", "annotations": {"pii": true, "searchable": true}},
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+                {"name": "email", "field_type": "string", "kind": {"type": "pii", "searchable": true}},
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
                 {"name": "name", "field_type": "string"}
             ]
         }))
@@ -1276,8 +1264,8 @@ async fn login_by_encrypted_email() {
         .json(&serde_json::json!({
             "name": "app",
             "fields": [
-                {"name": "email", "field_type": "string", "annotations": {"pii": true, "searchable": true}},
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}}
+                {"name": "email", "field_type": "string", "kind": {"type": "pii", "searchable": true}},
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}}
             ]
         }))
         .send()
@@ -1413,9 +1401,9 @@ async fn keep_secret_field_storage() {
         .json(&serde_json::json!({
             "name": "secrets",
             "fields": [
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
-                {"name": "api_key", "field_type": "string", "annotations": {"secret": true}},
-                {"name": "org", "field_type": "string", "annotations": {"index": true}}
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
+                {"name": "api_key", "field_type": "string", "kind": {"type": "secret"}},
+                {"name": "org", "field_type": "string", "kind": {"type": "index"}}
             ]
         }))
         .send()
@@ -1492,12 +1480,12 @@ name = "myapp"
 [[schemas.fields]]
 name = "password"
 field_type = "string"
-credential = true
+kind = { type = "credential", lockout = { max_attempts = 5, duration_secs = 900 } }
 
 [[schemas.fields]]
 name = "org"
 field_type = "string"
-index = true
+kind = { type = "index" }
 "#
             .to_string(),
         }],
@@ -1585,8 +1573,8 @@ async fn delete_envelope_cleans_up_blind_index() {
         .json(&serde_json::json!({
             "name": "cleanup-test",
             "fields": [
-                {"name": "email", "field_type": "string", "annotations": {"pii": true, "searchable": true}},
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}}
+                {"name": "email", "field_type": "string", "kind": {"type": "pii", "searchable": true}},
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}}
             ]
         }))
         .send()
@@ -1686,9 +1674,9 @@ async fn pii_fields_never_expose_ciphertext() {
         .json(&serde_json::json!({
             "name": "redact-test",
             "fields": [
-                {"name": "email", "field_type": "string", "annotations": {"pii": true}},
-                {"name": "ssn", "field_type": "string", "annotations": {"pii": true}},
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+                {"name": "email", "field_type": "string", "kind": {"type": "pii"}},
+                {"name": "ssn", "field_type": "string", "kind": {"type": "pii"}},
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
                 {"name": "name", "field_type": "string"}
             ]
         }))
@@ -1777,8 +1765,8 @@ async fn update_searchable_pii_updates_blind_index() {
         .json(&serde_json::json!({
             "name": "update-search-test",
             "fields": [
-                {"name": "email", "field_type": "string", "annotations": {"pii": true, "searchable": true}},
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}}
+                {"name": "email", "field_type": "string", "kind": {"type": "pii", "searchable": true}},
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}}
             ]
         }))
         .send()
@@ -1877,9 +1865,9 @@ async fn blind_per_field_e2ee_create_and_search() {
         .json(&serde_json::json!({
             "name": "blind-test",
             "fields": [
-                {"name": "email", "field_type": "string", "annotations": {"pii": true, "searchable": true}},
-                {"name": "name", "field_type": "string", "annotations": {"pii": true}},
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
+                {"name": "email", "field_type": "string", "kind": {"type": "pii", "searchable": true}},
+                {"name": "name", "field_type": "string", "kind": {"type": "pii"}},
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
                 {"name": "role", "field_type": "string"}
             ]
         }))
@@ -2001,9 +1989,9 @@ async fn blind_per_field_mixed_with_standard() {
         .json(&serde_json::json!({
             "name": "mixed-blind",
             "fields": [
-                {"name": "email", "field_type": "string", "annotations": {"pii": true}},
-                {"name": "phone", "field_type": "string", "annotations": {"pii": true}},
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}}
+                {"name": "email", "field_type": "string", "kind": {"type": "pii"}},
+                {"name": "phone", "field_type": "string", "kind": {"type": "pii"}},
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}}
             ]
         }))
         .send()
@@ -2089,8 +2077,8 @@ async fn blind_searchable_field_requires_tokens() {
         .json(&serde_json::json!({
             "name": "blind-missing-tokens",
             "fields": [
-                {"name": "email", "field_type": "string", "annotations": {"pii": true, "searchable": true}},
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}}
+                {"name": "email", "field_type": "string", "kind": {"type": "pii", "searchable": true}},
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}}
             ]
         }))
         .send()
@@ -2134,9 +2122,9 @@ async fn http_session_create_enriches_claim_fields() {
         .json(&serde_json::json!({
             "name": "claimapp",
             "fields": [
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
-                {"name": "role", "field_type": "string", "annotations": {"index": true, "claim": true}},
-                {"name": "org", "field_type": "string", "annotations": {"index": true}}
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
+                {"name": "role", "field_type": "string", "kind": {"type": "index", "claim": {}}},
+                {"name": "org", "field_type": "string", "kind": {"type": "index"}}
             ]
         }))
         .send()
@@ -2191,8 +2179,8 @@ async fn http_session_refresh_enriches_claims() {
         .json(&serde_json::json!({
             "name": "refreshclaimapp",
             "fields": [
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
-                {"name": "role", "field_type": "string", "annotations": {"index": true, "claim": true}}
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
+                {"name": "role", "field_type": "string", "kind": {"type": "index", "claim": {}}}
             ]
         }))
         .send()
@@ -2259,8 +2247,8 @@ async fn http_session_refresh_reflects_role_change() {
         .json(&serde_json::json!({
             "name": "rolechangehttp",
             "fields": [
-                {"name": "password", "field_type": "string", "annotations": {"credential": true}},
-                {"name": "role", "field_type": "string", "annotations": {"index": true, "claim": true}}
+                {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
+                {"name": "role", "field_type": "string", "kind": {"type": "index", "claim": {}}}
             ]
         }))
         .send()

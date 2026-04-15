@@ -31,7 +31,7 @@ Without a master key, Sigil starts in dev mode with an ephemeral key — data wo
 
 ## Schemas
 
-A schema defines the shape of a credential record. Each field has a type and optional annotations that determine how Sigil processes it.
+A schema defines the shape of a credential record. Each field has a type and a `kind` (a tagged `FieldKind` variant) that determines how Sigil processes it.
 
 ### Registration
 
@@ -42,10 +42,10 @@ curl -X POST http://localhost:6500/sigil/schemas \
   -d '{
     "name": "myapp",
     "fields": [
-      {"name": "email",    "field_type": "string", "annotations": {"pii": true, "searchable": true}},
-      {"name": "password", "field_type": "string", "annotations": {"credential": true}},
-      {"name": "org_id",   "field_type": "string", "annotations": {"index": true}},
-      {"name": "name",     "field_type": "string"}
+      {"name": "email",    "field_type": "string", "kind": {"type": "pii", "searchable": true}},
+      {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
+      {"name": "org_id",   "field_type": "string", "kind": {"type": "index"}},
+      {"name": "name",     "field_type": "string", "kind": {"type": "inert"}}
     ]
   }'
 
@@ -53,34 +53,130 @@ curl -X POST http://localhost:6500/sigil/schemas \
 SCHEMA REGISTER myapp {"fields":[...]}
 ```
 
-### Field annotations
+### Field kinds
 
-| Annotation | Treatment | Requires |
-|-----------|-----------|----------|
-| `credential: true` | Argon2id hash, verify, change, lockout | — |
-| `pii: true` | Encrypt at rest, decrypt on read | Cipher engine |
-| `searchable: true` | Encrypted + blind index for search | Cipher + Veil engines |
-| `secret: true` | Versioned secret with rotation | Keep engine |
-| `index: true` | Plaintext lookup index | — |
-| `claim: true` | Auto-include in JWT claims on session create/refresh | — |
-| `lockout: false` | Disable failed-attempt lockout on a credential field. Default `true` | `credential: true` |
-| (none) | Stored as-is | — |
+A field's `kind` is a tagged-union value, internally tagged on `type`. There are five variants:
+
+#### `inert`
+
+Stored as-is. No crypto treatment. Safe default for display names, timestamps, anything non-sensitive. Optionally carries `claim` to include the value in issued JWTs.
+
+```json
+{ "name": "display_name", "field_type": "string", "kind": { "type": "inert" } }
+```
+
+#### `index`
+
+Plaintext lookup index. Enables `ENVELOPE LOOKUP` / `SESSION LOGIN` on the field. Optionally carries `claim`.
+
+```json
+{ "name": "role", "field_type": "string",
+  "kind": { "type": "index", "claim": { "as_name": "sub" } } }
+```
+
+`claim.as_name` is optional — if omitted, the claim key matches the field name.
+
+#### `credential`
+
+Hashed and verified. Never returned on reads. Carries a `CredentialPolicy` — algorithm, length bounds, optional lockout.
+
+```json
+// Human password: Argon2id, lockout enabled
+{ "name": "password", "field_type": "string",
+  "kind": { "type": "credential",
+            "lockout": { "max_attempts": 5, "duration_secs": 900 } } }
+
+// Machine credential: unkeyed SHA-256 with constant-time compare, no lockout
+{ "name": "key_secret", "field_type": "string",
+  "kind": { "type": "credential", "algorithm": "sha256" } }
+```
+
+#### `pii`
+
+Encrypted at rest via Cipher. Optionally blind-indexed via Veil.
+
+```json
+{ "name": "email", "field_type": "string",
+  "kind": { "type": "pii", "searchable": true } }
+```
+
+#### `secret`
+
+Versioned storage via Keep. Sigil forwards writes and never reads back — `KeepOps` is one-way by design.
+
+```json
+{ "name": "api_client_secret", "field_type": "string",
+  "kind": { "type": "secret", "rotation_days": 90 } }
+```
+
+`rotation_days` is advisory metadata — Sigil does not itself trigger rotation.
+
+### Credential Policy
+
+The `credential` variant carries a per-field `CredentialPolicy`:
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `algorithm` | `argon2id` | `argon2id` for human credentials, `sha256` for high-entropy machine credentials. Legacy import-only variants: `argon2i`, `argon2d`, `bcrypt`, `scrypt` (all transparently rehashed to Argon2id on next successful verify). |
+| `min_length` | `None` → `8` (or `32` for `sha256`) | Minimum plaintext length enforced at write time. |
+| `max_length` | `None` → `128` | Maximum plaintext length enforced at write time. |
+| `lockout` | `None` → no lockout | Presence of a `LockoutPolicy { max_attempts, duration_secs }` enables failed-attempt lockout on this field. |
+
+Policy is **per-field**, not engine-wide. One schema can carry a `password` (Argon2id, lockout on) and an `api_key` (Sha256, no lockout) simultaneously:
+
+```sh
+SCHEMA REGISTER myapp '{"fields":[
+  {"name":"password",   "field_type":"string",
+   "kind":{"type":"credential",
+           "lockout":{"max_attempts":5,"duration_secs":900}}},
+  {"name":"api_key",    "field_type":"string",
+   "kind":{"type":"credential","algorithm":"sha256"}},
+  {"name":"email",      "field_type":"string",
+   "kind":{"type":"pii","searchable":true}}
+]}'
+```
+
+#### Why `sha256` is unkeyed (not HMAC)
+
+`PasswordAlgorithm::Sha256` is deliberately unkeyed SHA-256 with constant-time comparison, not HMAC-SHA-256.
+
+An HMAC path would require a key, and that key has to come from somewhere. The candidates:
+
+- **Sigil engine-startup config.** Reintroduces the "Sigil decides how credentials work" coupling that v2.0 exists to remove.
+- **`KeepOps`.** Sigil's `KeepOps` capability is explicitly one-way: `store_secret` / `delete_secret`, and Sigil never reads secrets back. Fetching an HMAC key from Keep at verify time would break that doctrine.
+
+Neither is acceptable. Meanwhile, HMAC's security value is defending against offline brute-force of low-entropy inputs. Machine credentials generated by `shroudb-crypto::generate_api_key` are 256-bit CSPRNG output — brute-force at 2^256 is not a threat. For that input, unkeyed SHA-256 with constant-time compare is cryptographically sufficient.
+
+Schema validation enforces this: `algorithm == sha256` requires `min_length >= 32`. The algorithm cannot be attached to low-entropy fields where the HMAC rationale would apply.
+
+If a use case later demands keyed verification of low-entropy machine credentials, a future `Sha256Hmac` variant can be added without breaking the current model — the decision above is about defaults, not permanence.
+
+### Engine Resources
+
+The only engine-wide credential knob left is `EngineResourceConfig`:
+
+```toml
+[engine_resources]
+max_concurrent_hashes = 4  # default; Semaphore bounds concurrent Argon2id hashes
+```
+
+This is a process-wide memory bound on Argon2id — a resource limit, not a credential property. All other knobs that used to live on the removed `PasswordPolicy` (algorithm, length bounds, lockout thresholds) are now per-field on `CredentialPolicy`.
 
 ### Validation rules
 
-- Multiple `credential` fields allowed (e.g., password + recovery_key)
-- `searchable` requires `pii`
-- `credential` and `pii` are mutually exclusive (credentials are hashed, not encrypted)
-- `credential` and `secret` are mutually exclusive
-- `claim` is mutually exclusive with `credential`, `pii`, and `secret` (only index/inert field values can be included in JWTs)
-- `lockout: false` is only valid on credential fields (lockout is meaningless without verify)
-- Field names: alphanumeric + underscores only
+- Multiple `credential` fields allowed (e.g., `password` + `recovery_key` + `api_key`).
+- Mutual exclusion between `credential` / `pii` / `secret` / `index` / `inert` is structural — a field can only have one `kind`.
+- `claim` only exists on `inert` and `index` variants — JWT claims are inappropriate on credential / PII / secret fields.
+- `pii.searchable = true` requires Cipher + Veil capability (rejected at registration if missing).
+- `CredentialPolicy.min_length > 0`; `max_length >= min_length` when both set; `LockoutPolicy.max_attempts > 0` and `duration_secs > 0`.
+- `algorithm == sha256` requires `min_length >= 32`.
+- Field names: alphanumeric + underscores only.
 
 ### Capability requirements
 
-Schema registration is rejected if annotations require engines that aren't available. This is fail-closed: a `pii: true` field without Cipher capability is an error, not a silent plaintext store.
+Schema registration is rejected if a `kind` requires an engine that isn't available. This is fail-closed: a `pii` field without Cipher capability is an error, not a silent plaintext store.
 
-In standalone mode, only `credential`, `index`, and unannotated fields are available. Other annotations require the corresponding engines (Cipher, Veil, Keep) to be configured.
+In standalone mode, only `inert`, `index`, and `credential` are available. `pii` / `secret` require the corresponding engines (Cipher, Veil, Keep) to be configured.
 
 ## Envelope Lifecycle
 
@@ -101,7 +197,7 @@ ENVELOPE CREATE myapp alice {"email":"alice@example.com","password":"correct-hor
 USER CREATE myapp alice {"email":"alice@example.com","password":"correct-horse","org_id":"acme","name":"Alice"}
 ```
 
-Each field is routed to the appropriate handler based on schema annotations. Credential fields are hashed with Argon2id and stored separately. PII fields are encrypted via Cipher. The envelope record contains only non-sensitive field values.
+Each field is routed to the appropriate handler based on its schema `kind`. Credential fields are hashed per their `CredentialPolicy` (Argon2id or Sha256) and stored separately. PII fields are encrypted via Cipher. The envelope record contains only non-sensitive field values.
 
 All fields are written atomically. If any field fails (e.g., Cipher is unavailable for a PII field), the entire operation is rolled back.
 
@@ -123,7 +219,7 @@ Wire protocol: `ENVELOPE IMPORT <schema> <id> <json>` or `USER IMPORT <schema> <
 
 Individual fields in a create or update payload can be marked as blind. When a field includes `"blind": true`, Sigil skips server-side processing for that field and stores the pre-processed value directly. This enables client-side encryption and tokenization (end-to-end encryption) where the server never sees plaintext.
 
-The blind wrapper is per-request, per-field. It is not a schema annotation. The schema annotations (`pii`, `searchable`, `credential`) still define what processing a field requires. The blind wrapper signals that the client has already performed that processing.
+The blind wrapper is per-request, per-field. It is not part of the schema `kind`. The schema `kind` (`pii`, `pii` with `searchable: true`, `credential`) still defines what processing a field requires. The blind wrapper signals that the client has already performed that processing.
 
 #### Blind wrapper format
 
@@ -132,14 +228,14 @@ The blind wrapper is per-request, per-field. It is not a schema annotation. The 
 {"blind": true, "value": "<ciphertext>", "tokens": "<b64 BlindTokenSet>"}
 ```
 
-#### Behavior per field treatment
+#### Behavior per field `kind`
 
-| Annotation | Blind `value` | Blind `tokens` | What's skipped |
-|-----------|---------------|----------------|----------------|
+| Field `kind` | Blind `value` | Blind `tokens` | What's skipped |
+|--------------|---------------|----------------|----------------|
 | `pii` | CiphertextEnvelope string (from `shroudb-cipher-blind`) | — | Cipher.encrypt() |
-| `pii` + `searchable` | CiphertextEnvelope string | Base64-encoded BlindTokenSet (from `shroudb-veil-blind`) | Cipher.encrypt() + Veil tokenization |
-| `credential` | Pre-hashed credential string | — | Argon2id hashing (same as import mode) |
-| (none) | Not allowed | — | Error: no processing to skip |
+| `pii` with `searchable: true` | CiphertextEnvelope string | Base64-encoded BlindTokenSet (from `shroudb-veil-blind`) | Cipher.encrypt() + Veil tokenization |
+| `credential` | Pre-hashed credential string | — | Hashing step (same as import mode) |
+| `inert` / `index` | Not allowed | — | Error: no processing to skip |
 
 #### Mixed payloads
 
@@ -247,7 +343,7 @@ Returns:
 
 Wire protocol: `SESSION CREATE <schema> <id> <password> [META <json>]`
 
-Fields annotated with `claim: true` in the schema are automatically read from the entity's envelope and merged into the JWT access token. Enriched values (from the envelope) override any caller-provided META for the same key, ensuring authoritative fields like `role` always come from the database. Non-enriched META claims pass through as-is.
+Fields whose `kind` (`inert` or `index`) carries a `claim` policy are automatically read from the entity's envelope and merged into the JWT access token. Enriched values (from the envelope) override any caller-provided META for the same key, ensuring authoritative fields like `role` always come from the database. Non-enriched META claims pass through as-is. If the claim policy sets `as_name`, the claim is emitted under that key instead of the field name.
 
 ### Login by Field
 
@@ -269,7 +365,7 @@ curl -X POST http://localhost:6500/sigil/myapp/sessions/refresh \
   -d '{"refresh_token": "a3f2..."}'
 ```
 
-Issues a new access token and rotates the refresh token. If the old refresh token is reused (indicating theft), the entire token family is revoked. Claim-annotated fields are re-read from the entity's current envelope on each refresh, so changes (e.g., role updates) take effect without requiring a full re-login.
+Issues a new access token and rotates the refresh token. If the old refresh token is reused (indicating theft), the entire token family is revoked. Claim fields are re-read from the entity's current envelope on each refresh, so changes (e.g., role updates) take effect without requiring a full re-login.
 
 ### Logout
 
@@ -329,26 +425,42 @@ Accepts pre-hashed credentials in Argon2id, Argon2i, Argon2d, bcrypt, or scrypt 
 
 ## Account Lockout
 
-After a configurable number of failed credential verification attempts (default: 5), the credential is locked for a configurable duration (default: 15 minutes). Correct credential during lockout still returns locked. Credential reset clears lockout. Lockout is per credential field — locking the `password` field doesn't affect the `recovery_key` field.
+Lockout is a per-field opt-in, carried as a `LockoutPolicy` on the credential field's `CredentialPolicy`. Presence of the policy enables lockout; absence disables it. There is no engine-global default — if you want lockout, declare it on the field.
 
-### Disabling lockout per field (`lockout: false`)
+```json
+{ "name": "password", "field_type": "string",
+  "kind": { "type": "credential",
+            "lockout": { "max_attempts": 5, "duration_secs": 900 } } }
+```
 
-Lockout is on by default for every credential field. It can be disabled per field by setting `lockout: false` on the field's annotations. When disabled, failed attempts are not counted, `locked_until` is never set, and `ACCOUNT_LOCKED` is never returned for that field — verify simply returns `VERIFICATION_FAILED` on a wrong value, regardless of how many times it's been wrong.
+When enabled, after `max_attempts` failed credential verification attempts, the field is locked for `duration_secs`. Correct credential during lockout still returns locked. `CREDENTIAL RESET` / `PASSWORD RESET` clears lockout. Lockout state is per credential field — locking the `password` field does not affect the `recovery_key` field.
 
-**When to leave it on (the default):** human-auth credentials — passwords, PINs, recovery keys typed by a person. Lockout mitigates online brute-force against a guessable secret.
+When disabled (no `lockout` sub-object on the credential field's kind), failed attempts are not counted, `locked_until` is never set, and `ACCOUNT_LOCKED` is never returned for that field — verify simply returns `VERIFICATION_FAILED` on a wrong value, regardless of how many times it's been wrong.
 
-**When to turn it off:** machine-auth credentials — API keys, service tokens, signing secrets where the entity ID is the public half of the key (e.g., `key_id` + `key_secret`). With lockout on, an attacker who learns a tenant's `key_id` can lock that tenant out of production by hammering bad secrets against the verify endpoint. With lockout off, brute-force protection comes from the secret's entropy (a 32-byte random secret is not feasibly guessable) and from the rate-limiting layer in front of Sigil — not from the lockout state.
+**When to enable lockout:** human-auth credentials — passwords, PINs, recovery keys typed by a person. Lockout mitigates online brute-force against a guessable secret.
 
-If `lockout: false` is set on a non-credential field, schema registration fails with `SCHEMA_VALIDATION` — lockout is meaningless without a verify path.
+**When to omit lockout:** machine-auth credentials — API keys, service tokens, signing secrets where the entity ID is the public half of the key (e.g., `key_id` + `key_secret`). With lockout on, an attacker who learns a tenant's `key_id` can lock that tenant out of production by hammering bad secrets against the verify endpoint. With lockout off, brute-force protection comes from the secret's entropy (a 32-byte random secret is not feasibly guessable) and from the rate-limiting layer in front of Sigil — not from the lockout state.
 
 ```sh
-# API-key schema: high-entropy secret, lockout disabled
+# API-key schema: high-entropy secret (sha256), no lockout
 SCHEMA REGISTER api_keys '{"fields":[
-  {"name":"key_secret", "field_type":"string", "annotations":{"credential":true, "lockout":false}},
-  {"name":"client_id",  "field_type":"string", "annotations":{"index":true, "claim":true}},
-  {"name":"scopes",     "field_type":"string", "annotations":{"claim":true}}
+  {"name":"key_secret", "field_type":"string",
+   "kind":{"type":"credential","algorithm":"sha256"}},
+  {"name":"client_id",  "field_type":"string",
+   "kind":{"type":"index","claim":{"as_name":"sub"}}},
+  {"name":"scopes",     "field_type":"string",
+   "kind":{"type":"inert","claim":{}}}
 ]}'
 ```
+
+### Migrating from v1 `lockout: bool`
+
+The pre-v2.0 shape used `"lockout": true|false` on a `FieldAnnotations` bag. The `shroudb-sigil-cli SCHEMA MIGRATE` tool rewrites those to v2 form:
+
+- `lockout: true` (or unset, since v1 defaulted to on) → `lockout: { max_attempts: 5, duration_secs: 900 }` (the pre-v2 implicit defaults, now explicit).
+- `lockout: false` → `lockout` omitted.
+
+This preserves observable behavior across upgrade. See the `v2.0.0` entry in `CHANGELOG.md` for operational steps.
 
 ## Envelope Recovery
 
@@ -361,10 +473,16 @@ A schema can declare multiple credential fields. Each has independent lockout st
 ```sh
 # Schema with a recovery credential
 SCHEMA REGISTER myapp {"fields":[
-  {"name":"email",        "field_type":"string", "annotations":{"pii":true,"searchable":true}},
-  {"name":"password",     "field_type":"string", "annotations":{"credential":true}},
-  {"name":"recovery_key", "field_type":"string", "annotations":{"credential":true}},
-  {"name":"org_id",       "field_type":"string", "annotations":{"index":true}}
+  {"name":"email",        "field_type":"string",
+   "kind":{"type":"pii","searchable":true}},
+  {"name":"password",     "field_type":"string",
+   "kind":{"type":"credential",
+           "lockout":{"max_attempts":5,"duration_secs":900}}},
+  {"name":"recovery_key", "field_type":"string",
+   "kind":{"type":"credential",
+           "lockout":{"max_attempts":5,"duration_secs":900}}},
+  {"name":"org_id",       "field_type":"string",
+   "kind":{"type":"index"}}
 ]}
 ```
 
@@ -423,7 +541,7 @@ shroudb-sigil-cli --addr 127.0.0.1:6499
 
 # Single command
 shroudb-sigil-cli HEALTH
-shroudb-sigil-cli SCHEMA REGISTER myapp '{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}}]}'
+shroudb-sigil-cli SCHEMA REGISTER myapp '{"fields":[{"name":"password","field_type":"string","kind":{"type":"credential"}}]}'
 shroudb-sigil-cli USER CREATE myapp alice '{"password":"test12345678"}'
 shroudb-sigil-cli USER VERIFY myapp alice test12345678
 shroudb-sigil-cli SESSION CREATE myapp alice test12345678

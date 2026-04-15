@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use shroudb_crypto::JwtAlgorithm;
 
-use shroudb_sigil_core::credential::PasswordPolicy;
+use shroudb_sigil_core::credential::EngineResourceConfig;
 use shroudb_sigil_core::error::SigilError;
+use shroudb_sigil_core::field_kind::CredentialPolicy;
 use shroudb_sigil_core::record::EnvelopeRecord;
 use shroudb_sigil_core::schema::{FieldDef, Schema};
 use shroudb_sigil_core::session::TokenPair;
@@ -17,8 +18,12 @@ use crate::session::SessionManager;
 use crate::write_coordinator::WriteCoordinator;
 
 /// Configuration for the Sigil engine.
+///
+/// Only process-scoped resource limits live here in v2.0. Per-field credential
+/// properties (algorithm, length bounds, lockout) come from each schema's
+/// `CredentialPolicy`, resolved per operation.
 pub struct SigilConfig {
-    pub password_policy: PasswordPolicy,
+    pub engine_resources: EngineResourceConfig,
     pub jwt_algorithm: JwtAlgorithm,
     pub access_ttl_secs: u64,
     pub refresh_ttl_secs: u64,
@@ -27,7 +32,7 @@ pub struct SigilConfig {
 impl Default for SigilConfig {
     fn default() -> Self {
         Self {
-            password_policy: PasswordPolicy::default(),
+            engine_resources: EngineResourceConfig::default(),
             jwt_algorithm: JwtAlgorithm::ES256,
             access_ttl_secs: 900,        // 15 minutes
             refresh_ttl_secs: 2_592_000, // 30 days
@@ -60,7 +65,7 @@ impl<S: Store> SigilEngine<S> {
 
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            config.password_policy,
+            config.engine_resources,
         ));
 
         let jwt = Arc::new(JwtManager::new(
@@ -179,9 +184,9 @@ impl<S: Store> SigilEngine<S> {
         value: &str,
     ) -> Result<bool, SigilError> {
         let schema = self.schemas.get(schema_name).await?;
-        let enforce_lockout = schema.field_lockout(field_name);
+        let policy = resolve_credential_policy(&schema, field_name)?;
         self.credentials
-            .verify(schema_name, entity_id, field_name, value, enforce_lockout)
+            .verify(schema_name, entity_id, field_name, value, &policy)
             .await
     }
 
@@ -294,15 +299,9 @@ impl<S: Store> SigilEngine<S> {
         // Verify credentials first (infers credential field from schema)
         let schema = self.schemas.get(schema_name).await?;
         let cred_field = schema.credential_field_name()?;
-        let enforce_lockout = schema.field_lockout(cred_field);
+        let policy = resolve_credential_policy(&schema, cred_field)?;
         self.credentials
-            .verify(
-                schema_name,
-                entity_id,
-                cred_field,
-                password,
-                enforce_lockout,
-            )
+            .verify(schema_name, entity_id, cred_field, password, &policy)
             .await?;
 
         let merged = self
@@ -367,7 +366,7 @@ impl<S: Store> SigilEngine<S> {
         new_value: &str,
     ) -> Result<(), SigilError> {
         let schema = self.schemas.get(schema_name).await?;
-        let enforce_lockout = schema.field_lockout(field_name);
+        let policy = resolve_credential_policy(&schema, field_name)?;
         self.credentials
             .change_credential(
                 schema_name,
@@ -375,7 +374,7 @@ impl<S: Store> SigilEngine<S> {
                 field_name,
                 old_value,
                 new_value,
-                enforce_lockout,
+                &policy,
             )
             .await
     }
@@ -387,8 +386,10 @@ impl<S: Store> SigilEngine<S> {
         field_name: &str,
         new_value: &str,
     ) -> Result<(), SigilError> {
+        let schema = self.schemas.get(schema_name).await?;
+        let policy = resolve_credential_policy(&schema, field_name)?;
         self.credentials
-            .reset_credential(schema_name, entity_id, field_name, new_value)
+            .reset_credential(schema_name, entity_id, field_name, new_value, &policy)
             .await
     }
 
@@ -399,8 +400,10 @@ impl<S: Store> SigilEngine<S> {
         field_name: &str,
         hash: &str,
     ) -> Result<shroudb_sigil_core::credential::PasswordAlgorithm, SigilError> {
+        let schema = self.schemas.get(schema_name).await?;
+        let policy = resolve_credential_policy(&schema, field_name)?;
         self.credentials
-            .import_credential(schema_name, entity_id, field_name, hash)
+            .import_credential(schema_name, entity_id, field_name, hash, &policy)
             .await
     }
 
@@ -499,4 +502,22 @@ impl<S: Store> SigilEngine<S> {
     pub async fn jwks(&self, schema_name: &str) -> Result<serde_json::Value, SigilError> {
         self.jwt.jwks(schema_name).await
     }
+}
+
+/// Resolve the `CredentialPolicy` for a field on a schema, or error if the
+/// field does not exist or is not a credential. Clones the policy so call
+/// sites can pass it by reference without holding a borrow on the schema.
+fn resolve_credential_policy(
+    schema: &Schema,
+    field_name: &str,
+) -> Result<CredentialPolicy, SigilError> {
+    schema
+        .credential_policy(field_name)
+        .cloned()
+        .ok_or_else(|| {
+            SigilError::SchemaValidation(format!(
+                "field '{field_name}' is not a credential field on schema '{}'",
+                schema.name
+            ))
+        })
 }

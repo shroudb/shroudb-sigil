@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use shroudb_acl::ServerAuthConfig;
+use shroudb_sigil_core::field_kind::FieldKind;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct SigilServerConfig {
@@ -31,63 +32,96 @@ pub struct SchemaConfig {
     pub fields: Vec<SchemaFieldConfig>,
 }
 
+/// Field entry in a schema config.
+///
+/// v2.0 shape: cryptographic treatment lives in a nested `[schemas.fields.kind]`
+/// table (the core `FieldKind` tagged enum). The flat `credential = true` /
+/// `pii = true` / etc. keys from v1.x are explicitly detected and rejected in
+/// `validate_v2_shape` with a pointer to the migration tool.
 #[derive(Debug, Deserialize)]
 pub struct SchemaFieldConfig {
     pub name: String,
     pub field_type: String,
-    #[serde(default)]
-    pub credential: bool,
-    #[serde(default)]
-    pub pii: bool,
-    #[serde(default)]
-    pub searchable: bool,
-    #[serde(default)]
-    pub secret: bool,
-    #[serde(default)]
-    pub index: bool,
-    #[serde(default)]
-    pub claim: bool,
-    /// Enforce lockout on repeated verify failures. Defaults to `true`.
-    /// Set to `false` for machine-auth credentials (API keys) where lockout
-    /// is a denial-of-service vector.
+    pub kind: FieldKind,
     #[serde(default = "default_true")]
-    pub lockout: bool,
+    pub required: bool,
+
+    // --- v1 legacy-key detectors ---
+    // These fields exist purely to surface a helpful error when someone loads
+    // a v1-format config against a v2.0 server. They are not part of the v2
+    // schema shape. Phase 6 keeps them as the v1-rejection barrier.
+    #[serde(default)]
+    credential: Option<bool>,
+    #[serde(default)]
+    pii: Option<bool>,
+    #[serde(default)]
+    searchable: Option<bool>,
+    #[serde(default)]
+    secret: Option<bool>,
+    #[serde(default)]
+    index: Option<bool>,
+    #[serde(default)]
+    claim: Option<bool>,
+    #[serde(default)]
+    lockout: Option<bool>,
 }
 
 fn default_true() -> bool {
     true
 }
 
+impl SchemaFieldConfig {
+    /// Detect v1 annotation keys at the field level and error with a clear
+    /// pointer to the migration tool. Called from `SchemaConfig::to_schema`.
+    fn validate_v2_shape(&self) -> anyhow::Result<()> {
+        let legacy: Vec<&str> = [
+            ("credential", self.credential.is_some()),
+            ("pii", self.pii.is_some()),
+            ("searchable", self.searchable.is_some()),
+            ("secret", self.secret.is_some()),
+            ("index", self.index.is_some()),
+            ("claim", self.claim.is_some()),
+            ("lockout", self.lockout.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(k, present)| if present { Some(k) } else { None })
+        .collect();
+        if !legacy.is_empty() {
+            anyhow::bail!(
+                "schema field '{}' uses v1 annotation keys ({}); v2.0 replaced these with a `[schemas.fields.kind]` table. \
+                 See CHANGELOG v2.0 migration notes, and run `shroudb-sigil-cli SCHEMA MIGRATE` for persisted schemas in the store.",
+                self.name,
+                legacy.join(", ")
+            );
+        }
+        Ok(())
+    }
+}
+
 impl SchemaConfig {
-    /// Convert to the core Schema type for registration.
-    pub fn to_schema(&self) -> shroudb_sigil_core::schema::Schema {
-        shroudb_sigil_core::schema::Schema {
+    /// Convert to the core Schema type for registration. Fails with a helpful
+    /// error when any field uses the legacy v1 annotation keys.
+    pub fn to_schema(&self) -> anyhow::Result<shroudb_sigil_core::schema::Schema> {
+        let mut fields = Vec::with_capacity(self.fields.len());
+        for f in &self.fields {
+            f.validate_v2_shape()?;
+            fields.push(shroudb_sigil_core::schema::FieldDef::with_kind(
+                f.name.clone(),
+                match f.field_type.as_str() {
+                    "integer" => shroudb_sigil_core::schema::FieldType::Integer,
+                    "boolean" => shroudb_sigil_core::schema::FieldType::Boolean,
+                    "bytes" => shroudb_sigil_core::schema::FieldType::Bytes,
+                    _ => shroudb_sigil_core::schema::FieldType::String,
+                },
+                f.kind.clone(),
+                f.required,
+            ));
+        }
+        Ok(shroudb_sigil_core::schema::Schema {
             name: self.name.clone(),
             version: 1,
-            fields: self
-                .fields
-                .iter()
-                .map(|f| shroudb_sigil_core::schema::FieldDef {
-                    name: f.name.clone(),
-                    field_type: match f.field_type.as_str() {
-                        "integer" => shroudb_sigil_core::schema::FieldType::Integer,
-                        "boolean" => shroudb_sigil_core::schema::FieldType::Boolean,
-                        "bytes" => shroudb_sigil_core::schema::FieldType::Bytes,
-                        _ => shroudb_sigil_core::schema::FieldType::String,
-                    },
-                    annotations: shroudb_sigil_core::schema::FieldAnnotations {
-                        credential: f.credential,
-                        pii: f.pii,
-                        searchable: f.searchable,
-                        secret: f.secret,
-                        index: f.index,
-                        claim: f.claim,
-                        lockout: f.lockout,
-                    },
-                    required: true,
-                })
-                .collect(),
-        }
+            fields,
+        })
     }
 }
 
@@ -294,5 +328,125 @@ uri = "shroudb+tls://token@store.example.com:6399"
             cfg.store.uri.as_deref(),
             Some("shroudb+tls://token@store.example.com:6399")
         );
+    }
+
+    // --- Phase 5: v2-only schema config ---
+
+    #[test]
+    fn config_parses_v2_credential_with_lockout() {
+        let toml = r#"
+[[schemas]]
+name = "users"
+
+[[schemas.fields]]
+name = "password"
+field_type = "string"
+kind = { type = "credential", lockout = { max_attempts = 5, duration_secs = 900 } }
+"#;
+        let cfg: SigilServerConfig = toml::from_str(toml).expect("parse failed");
+        let schema = cfg.schemas[0].to_schema().expect("to_schema failed");
+        let policy = schema.credential_policy("password").unwrap();
+        let lockout = policy.lockout.as_ref().unwrap();
+        assert_eq!(lockout.max_attempts, 5);
+        assert_eq!(lockout.duration_secs, 900);
+    }
+
+    #[test]
+    fn config_parses_v2_credential_sha256_no_lockout() {
+        let toml = r#"
+[[schemas]]
+name = "api_clients"
+
+[[schemas.fields]]
+name = "key_secret"
+field_type = "string"
+kind = { type = "credential", algorithm = "sha256" }
+"#;
+        let cfg: SigilServerConfig = toml::from_str(toml).expect("parse failed");
+        let schema = cfg.schemas[0].to_schema().expect("to_schema failed");
+        let policy = schema.credential_policy("key_secret").unwrap();
+        assert!(policy.lockout.is_none());
+        assert_eq!(
+            policy.algorithm,
+            shroudb_sigil_core::credential::PasswordAlgorithm::Sha256
+        );
+    }
+
+    #[test]
+    fn config_parses_v2_pii_searchable() {
+        let toml = r#"
+[[schemas]]
+name = "users"
+
+[[schemas.fields]]
+name = "email"
+field_type = "string"
+kind = { type = "pii", searchable = true }
+"#;
+        let cfg: SigilServerConfig = toml::from_str(toml).expect("parse failed");
+        let schema = cfg.schemas[0].to_schema().expect("to_schema failed");
+        let kind = &schema.fields[0].kind;
+        match kind {
+            FieldKind::Pii(p) => assert!(p.searchable),
+            _ => panic!("expected Pii variant"),
+        }
+    }
+
+    #[test]
+    fn config_parses_v2_index_with_claim() {
+        let toml = r#"
+[[schemas]]
+name = "accounts"
+
+[[schemas.fields]]
+name = "client_id"
+field_type = "string"
+kind = { type = "index", claim = { as_name = "sub" } }
+"#;
+        let cfg: SigilServerConfig = toml::from_str(toml).expect("parse failed");
+        let schema = cfg.schemas[0].to_schema().expect("to_schema failed");
+        let kind = &schema.fields[0].kind;
+        let claim = kind.claim().expect("claim present");
+        assert_eq!(claim.as_name.as_deref(), Some("sub"));
+    }
+
+    #[test]
+    fn config_rejects_v1_credential_key() {
+        let toml = r#"
+[[schemas]]
+name = "legacy"
+
+[[schemas.fields]]
+name = "password"
+field_type = "string"
+credential = true
+kind = { type = "inert" }
+"#;
+        // Parses (the extra key is deserialized), but to_schema fails with
+        // an actionable error.
+        let cfg: SigilServerConfig = toml::from_str(toml).expect("parse failed");
+        let err = cfg.schemas[0].to_schema().unwrap_err().to_string();
+        assert!(err.contains("v1 annotation keys"), "error was: {err}");
+        assert!(err.contains("SCHEMA MIGRATE"), "error was: {err}");
+        assert!(err.contains("credential"), "error was: {err}");
+    }
+
+    #[test]
+    fn config_rejects_multiple_v1_keys() {
+        let toml = r#"
+[[schemas]]
+name = "legacy"
+
+[[schemas.fields]]
+name = "email"
+field_type = "string"
+pii = true
+searchable = true
+kind = { type = "inert" }
+"#;
+        let cfg: SigilServerConfig = toml::from_str(toml).expect("parse failed");
+        let err = cfg.schemas[0].to_schema().unwrap_err().to_string();
+        assert!(err.contains("pii"), "error was: {err}");
+        assert!(err.contains("searchable"), "error was: {err}");
     }
 }

@@ -4,33 +4,36 @@ A schema-driven credential envelope engine for [ShrouDB](https://github.com/shro
 
 ## What It Does
 
-Sigil is not an auth service. It's a field-level crypto router. You register a credential schema with annotations, and Sigil applies the correct cryptographic treatment per field automatically.
+Sigil is not an auth service. It's a field-level crypto router. You register a credential schema where each field carries a `kind` — a tagged `FieldKind` variant — and Sigil applies the correct cryptographic treatment per field automatically.
 
 ```toml
 # Register a schema
 SCHEMA REGISTER myapp {
   "fields": [
-    {"name": "email",    "field_type": "string", "annotations": {"pii": true, "searchable": true}},
-    {"name": "password", "field_type": "string", "annotations": {"credential": true}},
-    {"name": "org_id",   "field_type": "string", "annotations": {"index": true}},
-    {"name": "role",     "field_type": "string", "annotations": {"index": true, "claim": true}}
+    {"name": "email",    "field_type": "string", "kind": {"type": "pii", "searchable": true}},
+    {"name": "password", "field_type": "string", "kind": {"type": "credential", "lockout": {"max_attempts": 5, "duration_secs": 900}}},
+    {"name": "org_id",   "field_type": "string", "kind": {"type": "index"}},
+    {"name": "role",     "field_type": "string", "kind": {"type": "index", "claim": {}}}
   ]
 }
 ```
 
 Then `USER CREATE myapp alice {"email":"a@b.com","password":"secret","org_id":"acme","role":"admin"}` knows what to do with each field:
 
-| Annotation | Treatment | Engine |
-|-----------|-----------|--------|
-| `credential` | Argon2id hash, verify, lockout | Sigil (internal) |
+| `FieldKind` variant | Treatment | Engine |
+|---------------------|-----------|--------|
+| `credential` | Per-field `CredentialPolicy`: algorithm (Argon2id or Sha256), length bounds, optional lockout | Sigil (internal) |
 | `pii` | Encrypt at rest | Cipher |
-| `pii` + `searchable` | Encrypt + blind index | Cipher + Veil |
+| `pii` with `searchable: true` | Encrypt + blind index | Cipher + Veil |
 | `secret` | Versioned secret storage | Keep |
 | `index` | Plaintext lookup index | Sigil (internal) |
-| `claim` | Auto-include in JWT claims on login/refresh | Sigil (internal) |
-| `lockout: false` (on a `credential` field) | Disable failed-attempt lockout. Use for API-key / machine-auth schemas where lockout is a denial-of-service vector | Sigil (internal) |
+| `inert` / `index` with `claim` | Auto-include field value in JWT claims on login/refresh (optionally renamed via `as_name`) | Sigil (internal) |
 
-The developer's API surface is "store this user shape" and "verify this credential." Sigil routes fields to the right engines internally.
+Credential policy is per-field. One schema can carry a human `password` (Argon2id + lockout) and a machine `api_key` (Sha256 + no lockout) side by side. Omit the `lockout` sub-object on a `credential` field to disable failed-attempt lockout — appropriate for API keys and service tokens where lockout is a denial-of-service vector.
+
+For high-entropy machine credentials, use `"algorithm": "sha256"` on the credential field. Sigil validates `min_length >= 32` on that algorithm so it can't be attached to low-entropy inputs — see `DOCS.md` for the unkeyed-SHA-256 vs. HMAC rationale.
+
+The developer's API surface is "store this entity shape" and "verify this credential." Sigil routes fields to the right engines internally.
 
 ## Quick Start
 
@@ -158,9 +161,9 @@ shroudb-sigil --config config.toml
 
 - **Access tokens:** JWT (ES256), configurable TTL (default 15m)
 - **Refresh tokens:** opaque, family-based rotation with reuse detection
-- **Claim enrichment:** fields annotated with `claim: true` are auto-included in JWT claims from the entity's envelope on both login and refresh. Enriched values always reflect the current envelope state, so role changes take effect on the next refresh without re-login.
+- **Claim enrichment:** `inert` and `index` fields carrying a `claim` policy are auto-included in JWT claims from the entity's envelope on both login and refresh. Enriched values always reflect the current envelope state, so role changes take effect on the next refresh without re-login. Use `claim: { as_name: "sub" }` to rename the claim key.
 - **Key rotation:** active → draining → retired lifecycle
-- **Account lockout:** configurable failed attempt threshold + lockout duration
+- **Account lockout:** per-field, set via `CredentialPolicy.lockout`. Omit to disable.
 - **JWKS:** public key set for external JWT verification
 
 ## Per-Field Blind Mode
@@ -180,14 +183,14 @@ This lets clients perform encryption and tokenization locally (e.g., via `shroud
 }
 ```
 
-The blind wrapper is per-request, per-field -- not a schema annotation. Schema annotations (`@pii`, `@searchable`) still define what processing a field needs. The blind wrapper says "I already did that processing." Standard (non-blind) fields in the same record are processed normally.
+The blind wrapper is per-request, per-field -- not part of the schema `kind`. The schema `FieldKind` still defines what processing a field needs. The blind wrapper says "I already did that processing." Standard (non-blind) fields in the same record are processed normally.
 
-| Field annotation | Blind behavior |
-|-----------------|----------------|
+| Field `kind` | Blind behavior |
+|--------------|----------------|
 | `pii` | `value` is a CiphertextEnvelope string; Cipher.encrypt() skipped |
-| `pii` + `searchable` | `value` is ciphertext + `tokens` is base64-encoded BlindTokenSet; Cipher and Veil skipped |
+| `pii` with `searchable: true` | `value` is ciphertext + `tokens` is base64-encoded BlindTokenSet; Cipher and Veil skipped |
 | `credential` | `value` is pre-hashed; same as import mode |
-| (none) | Cannot use blind -- no processing to skip |
+| `inert` / `index` | Cannot use blind -- no processing to skip |
 
 ## Password Import
 
@@ -210,12 +213,12 @@ Supported formats: Argon2id, Argon2i, Argon2d, bcrypt, scrypt. On the next succe
 ## Architecture
 
 ```
-shroudb-sigil-core/        — domain types (Schema, FieldAnnotations, etc.)
+shroudb-sigil-core/        — domain types (Schema, FieldKind, CredentialPolicy, etc.)
 shroudb-sigil-engine/      — Store-backed engine (SigilEngine)
 shroudb-sigil-protocol/    — RESP3 command parsing + dispatch
 shroudb-sigil-server/      — Axum HTTP + TCP binary
 shroudb-sigil-client/      — Rust client SDK
-shroudb-sigil-cli/         — CLI tool (single command + interactive REPL)
+shroudb-sigil-cli/         — CLI tool (single command + interactive REPL, incl. SCHEMA MIGRATE)
 ```
 
 See [`protocol.toml`](protocol.toml) for the full protocol specification.
@@ -247,8 +250,8 @@ let mut client = SigilClient::connect("127.0.0.1:6499").await?;
 
 client.schema_register("myapp", serde_json::json!({
     "fields": [
-        {"name": "password", "field_type": "string", "annotations": {"credential": true}},
-        {"name": "org", "field_type": "string", "annotations": {"index": true}}
+        {"name": "password", "field_type": "string", "kind": {"type": "credential"}},
+        {"name": "org", "field_type": "string", "kind": {"type": "index"}}
     ]
 })).await?;
 

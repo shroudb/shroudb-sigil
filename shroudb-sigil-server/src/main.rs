@@ -182,7 +182,9 @@ async fn run_server<S: Store + 'static>(
 
     // Seed schemas from config (idempotent — skips if already registered)
     for schema_cfg in &cfg.schemas {
-        let schema = schema_cfg.to_schema();
+        let schema = schema_cfg
+            .to_schema()
+            .map_err(|e| anyhow::anyhow!("schema '{}' in config: {e}", schema_cfg.name))?;
         match engine.schema_register(schema).await {
             Ok(version) => {
                 tracing::info!(schema = %schema_cfg.name, version, "schema registered from config");

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use shroudb_acl::{PolicyEffect, PolicyPrincipal, PolicyRequest, PolicyResource};
 use shroudb_sigil_core::error::SigilError;
 use shroudb_sigil_core::record::EnvelopeRecord;
-use shroudb_sigil_core::routing::{FieldTreatment, route_field};
+use shroudb_sigil_core::routing::{FieldTreatment, route_field_from_kind};
 use shroudb_sigil_core::schema::Schema;
 use shroudb_store::Store;
 
@@ -192,17 +192,8 @@ impl<S: Store> WriteCoordinator<S> {
                 // Optional field not provided — skip it
                 continue;
             };
-            let treatment = route_field(&field_def.annotations);
-
             let result = self
-                .process_field(
-                    &schema.name,
-                    entity_id,
-                    &field_def.name,
-                    value,
-                    treatment,
-                    import_mode,
-                )
+                .process_field(&schema.name, entity_id, field_def, value, import_mode)
                 .await;
 
             match result {
@@ -314,7 +305,7 @@ impl<S: Store> WriteCoordinator<S> {
             .map_err(|e| SigilError::Internal(e.to_string()))?;
 
         for field_def in &schema.fields {
-            let treatment = route_field(&field_def.annotations);
+            let treatment = route_field_from_kind(&field_def.kind);
             if !matches!(
                 treatment,
                 FieldTreatment::EncryptedPii | FieldTreatment::SearchableEncrypted
@@ -388,7 +379,7 @@ impl<S: Store> WriteCoordinator<S> {
                     reason: "field not in schema".into(),
                 })?;
 
-            let treatment = route_field(&field_def.annotations);
+            let treatment = route_field_from_kind(&field_def.kind);
             if treatment == FieldTreatment::Credential {
                 return Err(SigilError::InvalidField {
                     field: field_name.clone(),
@@ -411,7 +402,7 @@ impl<S: Store> WriteCoordinator<S> {
                 .find(|f| f.name == *field_name)
                 .unwrap(); // safe: validated above
 
-            let treatment = route_field(&field_def.annotations);
+            let treatment = route_field_from_kind(&field_def.kind);
 
             let result = match treatment {
                 FieldTreatment::PlaintextIndex | FieldTreatment::Inert => {
@@ -603,7 +594,7 @@ impl<S: Store> WriteCoordinator<S> {
         let sessions_ns = format!("sigil.{schema_name}.sessions");
 
         for field_def in &schema.fields {
-            let treatment = route_field(&field_def.annotations);
+            let treatment = route_field_from_kind(&field_def.kind);
             match treatment {
                 FieldTreatment::Credential => {
                     let key = credential_store_key(entity_id, &field_def.name);
@@ -694,20 +685,34 @@ impl<S: Store> WriteCoordinator<S> {
         &self,
         schema_name: &str,
         entity_id: &str,
-        field_name: &str,
+        field_def: &shroudb_sigil_core::schema::FieldDef,
         value: &serde_json::Value,
-        treatment: FieldTreatment,
         import_mode: bool,
     ) -> Result<FieldWriteResult, SigilError> {
+        let field_name = field_def.name.as_str();
+        let treatment = route_field_from_kind(&field_def.kind);
+        let credential_policy = field_def.kind.credential_policy();
+
         // Check for per-field blind wrapper before standard processing.
         let blind = Self::parse_blind_wrapper(value);
 
         match treatment {
             FieldTreatment::Credential => {
+                let policy = credential_policy.ok_or_else(|| {
+                    SigilError::Internal(format!(
+                        "credential field '{field_name}' has no CredentialPolicy"
+                    ))
+                })?;
                 if let Some(blind_data) = blind {
                     // Blind credential: pre-hashed value — same as import mode.
                     self.credentials
-                        .import_credential(schema_name, entity_id, field_name, &blind_data.value)
+                        .import_credential(
+                            schema_name,
+                            entity_id,
+                            field_name,
+                            &blind_data.value,
+                            policy,
+                        )
                         .await?;
                 } else {
                     let field_value = value.as_str().ok_or_else(|| SigilError::InvalidField {
@@ -717,11 +722,17 @@ impl<S: Store> WriteCoordinator<S> {
 
                     if import_mode {
                         self.credentials
-                            .import_credential(schema_name, entity_id, field_name, field_value)
+                            .import_credential(
+                                schema_name,
+                                entity_id,
+                                field_name,
+                                field_value,
+                                policy,
+                            )
                             .await?;
                     } else {
                         self.credentials
-                            .set_credential(schema_name, entity_id, field_name, field_value)
+                            .set_credential(schema_name, entity_id, field_name, field_value, policy)
                             .await?;
                     }
                 }
@@ -953,8 +964,11 @@ fn now_secs() -> u64 {
 mod tests {
     use std::sync::Arc;
 
-    use shroudb_sigil_core::credential::PasswordPolicy;
-    use shroudb_sigil_core::schema::{FieldAnnotations, FieldDef, FieldType, Schema};
+    use shroudb_sigil_core::credential::{EngineResourceConfig, PasswordAlgorithm};
+    use shroudb_sigil_core::field_kind::{
+        CredentialPolicy, FieldKind, LockoutPolicy, PiiPolicy, SecretPolicy,
+    };
+    use shroudb_sigil_core::schema::{FieldDef, FieldType, Schema};
     use shroudb_store::Store as _;
 
     use super::*;
@@ -963,35 +977,41 @@ mod tests {
     use crate::schema_registry::SchemaRegistry;
     use crate::schema_registry::tests::create_test_store;
 
+    fn legacy_credential_kind() -> FieldKind {
+        FieldKind::Credential(CredentialPolicy {
+            algorithm: PasswordAlgorithm::Argon2id,
+            min_length: None,
+            max_length: None,
+            lockout: Some(LockoutPolicy {
+                max_attempts: 5,
+                duration_secs: 900,
+            }),
+        })
+    }
+
     fn test_schema() -> Schema {
         Schema {
             name: "myapp".to_string(),
             version: 1,
             fields: vec![
-                FieldDef {
-                    name: "password".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        credential: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "org_id".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        index: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "display_name".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations::default(),
-                    required: true,
-                },
+                FieldDef::with_kind(
+                    "password",
+                    FieldType::String,
+                    legacy_credential_kind(),
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "org_id",
+                    FieldType::String,
+                    FieldKind::Index { claim: None },
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "display_name",
+                    FieldType::String,
+                    FieldKind::Inert { claim: None },
+                    true,
+                ),
             ],
         }
     }
@@ -1009,7 +1029,7 @@ mod tests {
 
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
         let capabilities = Arc::new(Capabilities::default());
         let coordinator = WriteCoordinator::new(store.clone(), credentials, capabilities);
@@ -1063,9 +1083,10 @@ mod tests {
             .unwrap();
 
         // Credential was stored via CredentialManager — verify it works
-        let cred_mgr = CredentialManager::new(store, PasswordPolicy::default());
+        let cred_mgr = CredentialManager::new(store, EngineResourceConfig::default());
+        let policy = schema.credential_policy("password").unwrap().clone();
         let valid = cred_mgr
-            .verify("myapp", "user1", "password", "correcthorse", true)
+            .verify("myapp", "user1", "password", "correcthorse", &policy)
             .await
             .unwrap();
         assert!(valid);
@@ -1108,12 +1129,12 @@ mod tests {
         let (_store, coord) = setup().await;
         let mut schema = test_schema();
         // Add an optional field to the schema
-        schema.fields.push(FieldDef {
-            name: "phone".to_string(),
-            field_type: FieldType::String,
-            annotations: FieldAnnotations::default(),
-            required: false,
-        });
+        schema.fields.push(FieldDef::with_kind(
+            "phone",
+            FieldType::String,
+            FieldKind::Inert { claim: None },
+            false,
+        ));
 
         // Create envelope without the optional phone field
         let record = coord
@@ -1132,12 +1153,12 @@ mod tests {
     async fn optional_field_provided_is_stored() {
         let (_store, coord) = setup().await;
         let mut schema = test_schema();
-        schema.fields.push(FieldDef {
-            name: "phone".to_string(),
-            field_type: FieldType::String,
-            annotations: FieldAnnotations::default(),
-            required: false,
-        });
+        schema.fields.push(FieldDef::with_kind(
+            "phone",
+            FieldType::String,
+            FieldKind::Inert { claim: None },
+            false,
+        ));
 
         let mut fields = entity_fields();
         fields.insert("phone".to_string(), serde_json::json!("555-1234"));
@@ -1237,7 +1258,7 @@ mod tests {
 
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
 
         // Create with no chronicle so the create succeeds.
@@ -1296,23 +1317,19 @@ mod tests {
         let schema = Schema {
             name: "del-cleanup".to_string(),
             version: 1,
-            fields: vec![FieldDef {
-                name: "email".to_string(),
-                field_type: FieldType::String,
-                annotations: FieldAnnotations {
-                    pii: true,
-                    searchable: true,
-                    ..Default::default()
-                },
-                required: true,
-            }],
+            fields: vec![FieldDef::with_kind(
+                "email",
+                FieldType::String,
+                FieldKind::Pii(PiiPolicy { searchable: true }),
+                true,
+            )],
         };
         registry.register(schema.clone()).await.unwrap();
 
         // Create with working capabilities
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
         let working_caps = Arc::new(Capabilities {
             cipher: Some(Box::new(TestCipherOps)),
@@ -1360,21 +1377,18 @@ mod tests {
         let schema = Schema {
             name: "pii-app".to_string(),
             version: 1,
-            fields: vec![FieldDef {
-                name: "email".to_string(),
-                field_type: FieldType::String,
-                annotations: FieldAnnotations {
-                    pii: true,
-                    ..Default::default()
-                },
-                required: true,
-            }],
+            fields: vec![FieldDef::with_kind(
+                "email",
+                FieldType::String,
+                FieldKind::Pii(PiiPolicy { searchable: false }),
+                true,
+            )],
         };
         registry.register(schema.clone()).await.unwrap();
 
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
         let capabilities = Arc::new(Capabilities::default()); // no cipher
         let coord = WriteCoordinator::new(store, credentials, capabilities);
@@ -1445,24 +1459,20 @@ mod tests {
             name: "keep-rollback".to_string(),
             version: 1,
             fields: vec![
-                FieldDef {
-                    name: "api_key".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        secret: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "email".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        pii: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
+                FieldDef::with_kind(
+                    "api_key",
+                    FieldType::String,
+                    FieldKind::Secret(SecretPolicy {
+                        rotation_days: None,
+                    }),
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "email",
+                    FieldType::String,
+                    FieldKind::Pii(PiiPolicy { searchable: false }),
+                    true,
+                ),
             ],
         };
         registry.register(schema.clone()).await.unwrap();
@@ -1476,7 +1486,7 @@ mod tests {
 
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
         let coord = WriteCoordinator::new(store.clone(), credentials, capabilities);
 
@@ -1514,33 +1524,26 @@ mod tests {
             name: "multi-rollback".to_string(),
             version: 1,
             fields: vec![
-                FieldDef {
-                    name: "password".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        credential: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "api_key".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        secret: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "ssn".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        pii: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
+                FieldDef::with_kind(
+                    "password",
+                    FieldType::String,
+                    legacy_credential_kind(),
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "api_key",
+                    FieldType::String,
+                    FieldKind::Secret(SecretPolicy {
+                        rotation_days: None,
+                    }),
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "ssn",
+                    FieldType::String,
+                    FieldKind::Pii(PiiPolicy { searchable: false }),
+                    true,
+                ),
             ],
         };
         registry.register(schema.clone()).await.unwrap();
@@ -1554,7 +1557,7 @@ mod tests {
 
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
         let coord = WriteCoordinator::new(store.clone(), credentials, capabilities);
 
@@ -1686,25 +1689,20 @@ mod tests {
             name: "veil-rollback".to_string(),
             version: 1,
             fields: vec![
-                FieldDef {
-                    name: "email".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        pii: true,
-                        searchable: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "api_key".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        secret: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
+                FieldDef::with_kind(
+                    "email",
+                    FieldType::String,
+                    FieldKind::Pii(PiiPolicy { searchable: true }),
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "api_key",
+                    FieldType::String,
+                    FieldKind::Secret(SecretPolicy {
+                        rotation_days: None,
+                    }),
+                    true,
+                ),
             ],
         };
         registry.register(schema.clone()).await.unwrap();
@@ -1720,7 +1718,7 @@ mod tests {
 
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
         let coord = WriteCoordinator::new(store.clone(), credentials, capabilities);
 
@@ -1768,34 +1766,26 @@ mod tests {
             name: "full-rollback".to_string(),
             version: 1,
             fields: vec![
-                FieldDef {
-                    name: "password".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        credential: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "api_key".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        secret: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "email".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        pii: true,
-                        searchable: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
+                FieldDef::with_kind(
+                    "password",
+                    FieldType::String,
+                    legacy_credential_kind(),
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "api_key",
+                    FieldType::String,
+                    FieldKind::Secret(SecretPolicy {
+                        rotation_days: None,
+                    }),
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "email",
+                    FieldType::String,
+                    FieldKind::Pii(PiiPolicy { searchable: true }),
+                    true,
+                ),
             ],
         };
         registry.register(schema.clone()).await.unwrap();
@@ -1810,7 +1800,7 @@ mod tests {
 
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
         let coord = WriteCoordinator::new(store.clone(), credentials, capabilities);
 
@@ -1858,24 +1848,18 @@ mod tests {
             name: "rollback-test".to_string(),
             version: 1,
             fields: vec![
-                FieldDef {
-                    name: "password".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        credential: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "email".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        pii: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
+                FieldDef::with_kind(
+                    "password",
+                    FieldType::String,
+                    legacy_credential_kind(),
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "email",
+                    FieldType::String,
+                    FieldKind::Pii(PiiPolicy { searchable: false }),
+                    true,
+                ),
             ],
         };
 
@@ -1934,15 +1918,12 @@ mod tests {
         let schema = Schema {
             name: "audit-test".to_string(),
             version: 1,
-            fields: vec![FieldDef {
-                name: "org_id".to_string(),
-                field_type: FieldType::String,
-                annotations: FieldAnnotations {
-                    index: true,
-                    ..Default::default()
-                },
-                required: true,
-            }],
+            fields: vec![FieldDef::with_kind(
+                "org_id",
+                FieldType::String,
+                FieldKind::Index { claim: None },
+                true,
+            )],
         };
         registry.register(schema.clone()).await.unwrap();
 
@@ -1952,7 +1933,7 @@ mod tests {
         });
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
         let coord = WriteCoordinator::new(store.clone(), credentials, capabilities);
 
@@ -1985,19 +1966,19 @@ mod tests {
         let schema = Schema {
             name: "audit-del".to_string(),
             version: 1,
-            fields: vec![FieldDef {
-                name: "name".to_string(),
-                field_type: FieldType::String,
-                annotations: FieldAnnotations::default(),
-                required: true,
-            }],
+            fields: vec![FieldDef::with_kind(
+                "name",
+                FieldType::String,
+                FieldKind::Inert { claim: None },
+                true,
+            )],
         };
         registry.register(schema.clone()).await.unwrap();
 
         // Create without chronicle (succeeds)
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
         let no_chronicle = Arc::new(Capabilities::default());
         let coord_create = WriteCoordinator::new(store.clone(), credentials.clone(), no_chronicle);
@@ -2110,24 +2091,20 @@ mod tests {
             name: "concurrency-test".to_string(),
             version: 1,
             fields: vec![
-                FieldDef {
-                    name: "api_key".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        secret: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "org".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        index: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
+                FieldDef::with_kind(
+                    "api_key",
+                    FieldType::String,
+                    FieldKind::Secret(SecretPolicy {
+                        rotation_days: None,
+                    }),
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "org",
+                    FieldType::String,
+                    FieldKind::Index { claim: None },
+                    true,
+                ),
             ],
         };
         registry.register(schema.clone()).await.unwrap();
@@ -2138,7 +2115,7 @@ mod tests {
         });
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
         let coord = Arc::new(WriteCoordinator::new(
             store.clone(),
@@ -2226,24 +2203,20 @@ mod tests {
             name: "orphan-test".to_string(),
             version: 1,
             fields: vec![
-                FieldDef {
-                    name: "api_key".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        secret: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "email".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        pii: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
+                FieldDef::with_kind(
+                    "api_key",
+                    FieldType::String,
+                    FieldKind::Secret(SecretPolicy {
+                        rotation_days: None,
+                    }),
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "email",
+                    FieldType::String,
+                    FieldKind::Pii(PiiPolicy { searchable: false }),
+                    true,
+                ),
             ],
         };
         registry.register(schema.clone()).await.unwrap();
@@ -2258,7 +2231,7 @@ mod tests {
 
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
         let coord = WriteCoordinator::new(store.clone(), credentials, capabilities);
 
@@ -2313,21 +2286,18 @@ mod tests {
             name: "dup-race".to_string(),
             version: 1,
             fields: vec![
-                FieldDef {
-                    name: "org_id".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        index: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "name".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations::default(),
-                    required: true,
-                },
+                FieldDef::with_kind(
+                    "org_id",
+                    FieldType::String,
+                    FieldKind::Index { claim: None },
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "name",
+                    FieldType::String,
+                    FieldKind::Inert { claim: None },
+                    true,
+                ),
             ],
         };
         registry.register(schema.clone()).await.unwrap();
@@ -2335,7 +2305,7 @@ mod tests {
         let capabilities = Arc::new(Capabilities::default());
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
         let coord = Arc::new(WriteCoordinator::new(
             store.clone(),
@@ -2433,24 +2403,18 @@ mod tests {
             name: "pii-app".to_string(),
             version: 1,
             fields: vec![
-                FieldDef {
-                    name: "email".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        pii: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "org_id".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        index: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
+                FieldDef::with_kind(
+                    "email",
+                    FieldType::String,
+                    FieldKind::Pii(PiiPolicy { searchable: false }),
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "org_id",
+                    FieldType::String,
+                    FieldKind::Index { claim: None },
+                    true,
+                ),
             ],
         }
     }
@@ -2464,7 +2428,7 @@ mod tests {
 
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
-            PasswordPolicy::default(),
+            EngineResourceConfig::default(),
         ));
         let capabilities = Arc::new(Capabilities {
             cipher: Some(Box::new(MockCipher)),

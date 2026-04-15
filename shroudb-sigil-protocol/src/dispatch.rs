@@ -464,7 +464,7 @@ mod tests {
             "SCHEMA",
             "REGISTER",
             "myapp",
-            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+            r#"{"fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},{"name":"org","field_type":"string","kind":{"type":"index"}}]}"#,
         ])
         .unwrap();
         let resp = dispatch(&engine, cmd, None).await;
@@ -512,7 +512,7 @@ mod tests {
             "SCHEMA",
             "REGISTER",
             "services",
-            r#"{"fields":[{"name":"api_key","field_type":"string","annotations":{"credential":true}},{"name":"endpoint","field_type":"string","annotations":{"index":true}}]}"#,
+            r#"{"fields":[{"name":"api_key","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},{"name":"endpoint","field_type":"string","kind":{"type":"index"}}]}"#,
         ])
         .unwrap();
         let resp = dispatch(&engine, cmd, None).await;
@@ -551,7 +551,7 @@ mod tests {
         // Register + create user
         let cmd = parse_command(&[
             "SCHEMA", "REGISTER", "myapp",
-            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}}]}"#,
+            r#"{"fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}}]}"#,
         ]).unwrap();
         dispatch(&engine, cmd, None).await;
 
@@ -580,7 +580,7 @@ mod tests {
             "SCHEMA",
             "REGISTER",
             "evolve",
-            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+            r#"{"fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},{"name":"org","field_type":"string","kind":{"type":"index"}}]}"#,
         ])
         .unwrap();
         let resp = dispatch(&engine, cmd, None).await;
@@ -592,7 +592,7 @@ mod tests {
             "ALTER",
             "evolve",
             "ADD",
-            r#"{"name":"phone","field_type":"string","annotations":{"pii":false}}"#,
+            r#"{"name":"phone","field_type":"string","kind":{"type":"inert"}}"#,
         ])
         .unwrap();
         let resp = dispatch(&engine, cmd, None).await;
@@ -613,7 +613,7 @@ mod tests {
             "SCHEMA",
             "REGISTER",
             "optapp",
-            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+            r#"{"fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},{"name":"org","field_type":"string","kind":{"type":"index"}}]}"#,
         ])
         .unwrap();
         dispatch(&engine, cmd, None).await;
@@ -624,7 +624,7 @@ mod tests {
             "ALTER",
             "optapp",
             "ADD",
-            r#"{"name":"phone","field_type":"string","annotations":{}}"#,
+            r#"{"name":"phone","field_type":"string","kind":{"type":"inert"}}"#,
         ])
         .unwrap();
         dispatch(&engine, cmd, None).await;
@@ -666,7 +666,7 @@ mod tests {
             "SCHEMA",
             "REGISTER",
             "compat",
-            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+            r#"{"fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},{"name":"org","field_type":"string","kind":{"type":"index"}}]}"#,
         ])
         .unwrap();
         dispatch(&engine, cmd, None).await;
@@ -689,7 +689,7 @@ mod tests {
             "ALTER",
             "compat",
             "ADD",
-            r#"{"name":"phone","field_type":"string","annotations":{}}"#,
+            r#"{"name":"phone","field_type":"string","kind":{"type":"inert"}}"#,
         ])
         .unwrap();
         dispatch(&engine, cmd, None).await;
@@ -714,7 +714,7 @@ mod tests {
             "SCHEMA",
             "REGISTER",
             "claimapp",
-            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"role","field_type":"string","annotations":{"index":true,"claim":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+            r#"{"fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},{"name":"role","field_type":"string","kind":{"type":"index","claim":{}}},{"name":"org","field_type":"string","kind":{"type":"index"}}]}"#,
         ])
         .unwrap();
         let resp = dispatch(&engine, cmd, None).await;
@@ -765,7 +765,7 @@ mod tests {
             "SCHEMA",
             "REGISTER",
             "overrideapp",
-            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"role","field_type":"string","annotations":{"index":true,"claim":true}}]}"#,
+            r#"{"fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},{"name":"role","field_type":"string","kind":{"type":"index","claim":{}}}]}"#,
         ])
         .unwrap();
         dispatch(&engine, cmd, None).await;
@@ -824,7 +824,7 @@ mod tests {
             "SCHEMA",
             "REGISTER",
             "noclaimapp",
-            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+            r#"{"fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},{"name":"org","field_type":"string","kind":{"type":"index"}}]}"#,
         ])
         .unwrap();
         dispatch(&engine, cmd, None).await;
@@ -878,7 +878,7 @@ mod tests {
             "SCHEMA",
             "REGISTER",
             "refreshapp",
-            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"role","field_type":"string","annotations":{"index":true,"claim":true}}]}"#,
+            r#"{"fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},{"name":"role","field_type":"string","kind":{"type":"index","claim":{}}}]}"#,
         ])
         .unwrap();
         dispatch(&engine, cmd, None).await;
@@ -929,7 +929,7 @@ mod tests {
             "SCHEMA",
             "REGISTER",
             "rolechangeapp",
-            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"role","field_type":"string","annotations":{"index":true,"claim":true}}]}"#,
+            r#"{"fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},{"name":"role","field_type":"string","kind":{"type":"index","claim":{}}}]}"#,
         ])
         .unwrap();
         dispatch(&engine, cmd, None).await;
@@ -997,7 +997,7 @@ mod tests {
             "SCHEMA",
             "REGISTER",
             "noclaimrefresh",
-            r#"{"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"org","field_type":"string","annotations":{"index":true}}]}"#,
+            r#"{"fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},{"name":"org","field_type":"string","kind":{"type":"index"}}]}"#,
         ])
         .unwrap();
         dispatch(&engine, cmd, None).await;

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::SigilError;
+use crate::field_kind::{CredentialPolicy, FieldKind};
 
 fn default_version() -> u32 {
     1
@@ -73,7 +74,7 @@ impl Schema {
     pub fn credential_fields(&self) -> Vec<&str> {
         self.fields
             .iter()
-            .filter(|f| f.annotations.credential)
+            .filter(|f| f.kind.is_credential())
             .map(|f| f.name.as_str())
             .collect()
     }
@@ -83,7 +84,7 @@ impl Schema {
     pub fn claim_fields(&self) -> Vec<&str> {
         self.fields
             .iter()
-            .filter(|f| f.annotations.claim)
+            .filter(|f| f.kind.claim().is_some())
             .map(|f| f.name.as_str())
             .collect()
     }
@@ -96,8 +97,20 @@ impl Schema {
         self.fields
             .iter()
             .find(|f| f.name == field_name)
-            .map(|f| f.annotations.lockout)
+            .and_then(|f| f.kind.credential_policy())
+            .map(|p| p.lockout.is_some())
             .unwrap_or(true)
+    }
+
+    /// Returns the resolved credential policy for the named field, or `None`
+    /// if the field does not exist or is not a credential. The engine uses
+    /// this on every credential operation (verify, set, change) to apply
+    /// per-field algorithm, length bounds, and lockout thresholds.
+    pub fn credential_policy(&self, field_name: &str) -> Option<&CredentialPolicy> {
+        self.fields
+            .iter()
+            .find(|f| f.name == field_name)
+            .and_then(|f| f.kind.credential_policy())
     }
 
     /// Returns the single credential field name, or an error if zero or
@@ -118,23 +131,78 @@ impl Schema {
 }
 
 /// A single field in a credential schema.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// v2.0 shape: `kind` carries the field's cryptographic treatment as a tagged
+/// enum, making mutex rules structural. Deserialization rejects the legacy v1
+/// `annotations` key with a pointer to the migration tool.
+#[derive(Debug, Clone, Serialize)]
 pub struct FieldDef {
     /// Field name (must be a valid identifier: alphanumeric + underscores).
     pub name: String,
     /// Data type of the field.
     pub field_type: FieldType,
-    /// Cryptographic treatment annotations.
-    #[serde(default)]
-    pub annotations: FieldAnnotations,
+    /// Per-field cryptographic treatment.
+    pub kind: FieldKind,
     /// Whether this field is required on envelope creation. Fields added via
     /// ALTER are optional (required=false). Defaults to true for backward
     /// compatibility with schemas registered before schema evolution.
-    #[serde(default = "default_true")]
     pub required: bool,
 }
 
+impl<'de> Deserialize<'de> for FieldDef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            name: String,
+            field_type: FieldType,
+            /// Present on v1 schemas. Rejected — run `SCHEMA MIGRATE` to upgrade.
+            #[serde(default)]
+            annotations: Option<serde_json::Value>,
+            #[serde(default)]
+            kind: Option<FieldKind>,
+            #[serde(default = "default_true")]
+            required: bool,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        if raw.annotations.is_some() {
+            return Err(serde::de::Error::custom(format!(
+                "field '{}': legacy `annotations` key is not supported in v2.0 — \
+                 run `shroudb-sigil-cli SCHEMA MIGRATE` against the store to upgrade \
+                 persisted schemas (see CHANGELOG v2.0 migration notes)",
+                raw.name
+            )));
+        }
+        let kind = raw.kind.unwrap_or_default();
+
+        Ok(FieldDef {
+            name: raw.name,
+            field_type: raw.field_type,
+            kind,
+            required: raw.required,
+        })
+    }
+}
+
 impl FieldDef {
+    /// Construct a `FieldDef` directly from a `FieldKind`.
+    pub fn with_kind(
+        name: impl Into<String>,
+        field_type: FieldType,
+        kind: FieldKind,
+        required: bool,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            field_type,
+            kind,
+            required,
+        }
+    }
+
     /// Validate field-level rules.
     pub fn validate(&self) -> Result<(), SigilError> {
         if self.name.is_empty() {
@@ -154,56 +222,7 @@ impl FieldDef {
             )));
         }
 
-        self.annotations.validate(&self.name)
-    }
-}
-
-impl FieldAnnotations {
-    /// Validate annotation combinations.
-    fn validate(&self, field_name: &str) -> Result<(), SigilError> {
-        if self.credential && self.pii {
-            return Err(SigilError::SchemaValidation(format!(
-                "field '{field_name}': credential and pii are mutually exclusive (credentials are hashed, not encrypted)"
-            )));
-        }
-
-        if self.credential && self.secret {
-            return Err(SigilError::SchemaValidation(format!(
-                "field '{field_name}': credential and secret are mutually exclusive"
-            )));
-        }
-
-        if self.searchable && !self.pii {
-            return Err(SigilError::SchemaValidation(format!(
-                "field '{field_name}': searchable requires pii"
-            )));
-        }
-
-        if self.claim && self.credential {
-            return Err(SigilError::SchemaValidation(format!(
-                "field '{field_name}': claim and credential are mutually exclusive"
-            )));
-        }
-
-        if self.claim && self.pii {
-            return Err(SigilError::SchemaValidation(format!(
-                "field '{field_name}': claim and pii are mutually exclusive (encrypted values cannot be included in JWT claims)"
-            )));
-        }
-
-        if self.claim && self.secret {
-            return Err(SigilError::SchemaValidation(format!(
-                "field '{field_name}': claim and secret are mutually exclusive"
-            )));
-        }
-
-        if !self.lockout && !self.credential {
-            return Err(SigilError::SchemaValidation(format!(
-                "field '{field_name}': lockout=false is only valid on credential fields"
-            )));
-        }
-
-        Ok(())
+        self.kind.validate(&self.name)
     }
 }
 
@@ -217,79 +236,26 @@ pub enum FieldType {
     Bytes,
 }
 
-/// Annotations that determine how a field's value is processed.
-///
-/// These drive the field routing: each annotation maps to a specific
-/// cryptographic treatment and potentially a specific engine.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FieldAnnotations {
-    /// Hash with Argon2id. Supports verify, change, lockout.
-    /// At most one credential field per schema.
-    #[serde(default)]
-    pub credential: bool,
-
-    /// Encrypt at rest via Cipher. Requires Cipher capability.
-    #[serde(default)]
-    pub pii: bool,
-
-    /// Create a blind index for encrypted search via Veil.
-    /// Requires `pii: true` and Cipher + Veil capabilities.
-    #[serde(default)]
-    pub searchable: bool,
-
-    /// Store as a versioned secret via Keep. Requires Keep capability.
-    #[serde(default)]
-    pub secret: bool,
-
-    /// Create a plaintext index for direct lookups.
-    #[serde(default)]
-    pub index: bool,
-
-    /// Include this field's value in JWT claims on session creation and refresh.
-    /// Only valid on non-credential, non-pii, non-secret fields (index or inert).
-    /// Enriched claim values always come from the envelope, overriding any
-    /// caller-provided extra_claims for the same key.
-    #[serde(default)]
-    pub claim: bool,
-
-    /// Enforce lockout on repeated verify failures for this credential field.
-    ///
-    /// Default `true`. Only meaningful when `credential = true`. Set to `false`
-    /// for machine-auth schemas (API keys, service tokens) where lockout would
-    /// let an attacker who guesses a valid `entity_id` deny service to a tenant
-    /// by hammering bad secrets. Leave `true` for human-auth schemas (passwords)
-    /// where brute-force mitigation is the goal.
-    #[serde(default = "default_true")]
-    pub lockout: bool,
-}
-
-impl Default for FieldAnnotations {
-    fn default() -> Self {
-        Self {
-            credential: false,
-            pii: false,
-            searchable: false,
-            secret: false,
-            index: false,
-            claim: false,
-            lockout: true,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential::PasswordAlgorithm;
+    use crate::field_kind::{ClaimPolicy, LockoutPolicy, PiiPolicy};
 
-    fn field(name: &str, f: impl FnOnce(&mut FieldAnnotations)) -> FieldDef {
-        let mut annotations = FieldAnnotations::default();
-        f(&mut annotations);
-        FieldDef {
-            name: name.to_string(),
-            field_type: FieldType::String,
-            annotations,
-            required: true,
-        }
+    fn legacy_credential() -> FieldKind {
+        FieldKind::Credential(CredentialPolicy {
+            algorithm: PasswordAlgorithm::Argon2id,
+            min_length: None,
+            max_length: None,
+            lockout: Some(LockoutPolicy {
+                max_attempts: 5,
+                duration_secs: 900,
+            }),
+        })
+    }
+
+    fn field(name: &str, kind: FieldKind) -> FieldDef {
+        FieldDef::with_kind(name, FieldType::String, kind, true)
     }
 
     fn schema(name: &str, fields: Vec<FieldDef>) -> Schema {
@@ -305,9 +271,9 @@ mod tests {
         let s = schema(
             "myapp",
             vec![
-                field("email", |a| a.pii = true),
-                field("password", |a| a.credential = true),
-                field("org_id", |a| a.index = true),
+                field("email", FieldKind::Pii(PiiPolicy { searchable: false })),
+                field("password", legacy_credential()),
+                field("org_id", FieldKind::Index { claim: None }),
             ],
         );
         assert!(s.validate().is_ok());
@@ -315,13 +281,16 @@ mod tests {
 
     #[test]
     fn empty_name_rejected() {
-        let s = schema("", vec![field("f", |_| {})]);
+        let s = schema("", vec![field("f", FieldKind::Inert { claim: None })]);
         assert!(s.validate().is_err());
     }
 
     #[test]
     fn invalid_name_chars() {
-        let s = schema("my app!", vec![field("f", |_| {})]);
+        let s = schema(
+            "my app!",
+            vec![field("f", FieldKind::Inert { claim: None })],
+        );
         assert!(s.validate().is_err());
     }
 
@@ -335,7 +304,10 @@ mod tests {
     fn duplicate_field_names_rejected() {
         let s = schema(
             "myapp",
-            vec![field("email", |_| {}), field("email", |_| {})],
+            vec![
+                field("email", FieldKind::Inert { claim: None }),
+                field("email", FieldKind::Inert { claim: None }),
+            ],
         );
         assert!(s.validate().is_err());
     }
@@ -345,8 +317,8 @@ mod tests {
         let s = schema(
             "myapp",
             vec![
-                field("password", |a| a.credential = true),
-                field("pin", |a| a.credential = true),
+                field("password", legacy_credential()),
+                field("pin", legacy_credential()),
             ],
         );
         assert!(s.validate().is_ok());
@@ -355,45 +327,13 @@ mod tests {
     }
 
     #[test]
-    fn credential_and_pii_mutually_exclusive() {
-        let s = schema(
-            "myapp",
-            vec![field("password", |a| {
-                a.credential = true;
-                a.pii = true;
-            })],
-        );
-        let err = s.validate().unwrap_err();
-        assert!(err.to_string().contains("mutually exclusive"));
-    }
-
-    #[test]
-    fn credential_and_secret_mutually_exclusive() {
-        let s = schema(
-            "myapp",
-            vec![field("password", |a| {
-                a.credential = true;
-                a.secret = true;
-            })],
-        );
-        assert!(s.validate().is_err());
-    }
-
-    #[test]
-    fn searchable_requires_pii() {
-        let s = schema("myapp", vec![field("email", |a| a.searchable = true)]);
-        let err = s.validate().unwrap_err();
-        assert!(err.to_string().contains("searchable requires pii"));
-    }
-
-    #[test]
     fn searchable_with_pii_valid() {
         let s = schema(
             "myapp",
-            vec![field("email", |a| {
-                a.pii = true;
-                a.searchable = true;
-            })],
+            vec![field(
+                "email",
+                FieldKind::Pii(PiiPolicy { searchable: true }),
+            )],
         );
         assert!(s.validate().is_ok());
     }
@@ -403,11 +343,8 @@ mod tests {
         let s = schema(
             "myapp",
             vec![
-                field("email", |a| {
-                    a.pii = true;
-                    a.searchable = true;
-                }),
-                field("password", |a| a.credential = true),
+                field("email", FieldKind::Pii(PiiPolicy { searchable: true })),
+                field("password", legacy_credential()),
             ],
         );
         let json = serde_json::to_string(&s).unwrap();
@@ -415,9 +352,12 @@ mod tests {
         assert_eq!(parsed.name, "myapp");
         assert_eq!(parsed.version, 1);
         assert_eq!(parsed.fields.len(), 2);
-        assert!(parsed.fields[0].annotations.searchable);
+        assert!(matches!(
+            &parsed.fields[0].kind,
+            FieldKind::Pii(PiiPolicy { searchable: true })
+        ));
         assert!(parsed.fields[0].required);
-        assert!(parsed.fields[1].annotations.credential);
+        assert!(parsed.fields[1].kind.is_credential());
     }
 
     #[test]
@@ -431,16 +371,19 @@ mod tests {
 
     #[test]
     fn optional_field_valid() {
-        let mut s = schema("myapp", vec![field("email", |a| a.pii = true)]);
-        s.fields.push(FieldDef {
-            name: "phone".to_string(),
-            field_type: FieldType::String,
-            annotations: FieldAnnotations {
-                pii: true,
-                ..Default::default()
-            },
-            required: false,
-        });
+        let mut s = schema(
+            "myapp",
+            vec![field(
+                "email",
+                FieldKind::Pii(PiiPolicy { searchable: false }),
+            )],
+        );
+        s.fields.push(FieldDef::with_kind(
+            "phone",
+            FieldType::String,
+            FieldKind::Pii(PiiPolicy { searchable: false }),
+            false,
+        ));
         assert!(s.validate().is_ok());
     }
 
@@ -449,11 +392,13 @@ mod tests {
         let s = schema(
             "myapp",
             vec![
-                field("password", |a| a.credential = true),
-                field("role", |a| {
-                    a.index = true;
-                    a.claim = true;
-                }),
+                field("password", legacy_credential()),
+                field(
+                    "role",
+                    FieldKind::Index {
+                        claim: Some(ClaimPolicy::default()),
+                    },
+                ),
             ],
         );
         assert!(s.validate().is_ok());
@@ -465,8 +410,13 @@ mod tests {
         let s = schema(
             "myapp",
             vec![
-                field("password", |a| a.credential = true),
-                field("display_name", |a| a.claim = true),
+                field("password", legacy_credential()),
+                field(
+                    "display_name",
+                    FieldKind::Inert {
+                        claim: Some(ClaimPolicy::default()),
+                    },
+                ),
             ],
         );
         assert!(s.validate().is_ok());
@@ -474,104 +424,128 @@ mod tests {
     }
 
     #[test]
-    fn claim_and_credential_mutually_exclusive() {
-        let s = schema(
-            "myapp",
-            vec![field("password", |a| {
-                a.credential = true;
-                a.claim = true;
-            })],
-        );
-        let err = s.validate().unwrap_err();
-        assert!(err.to_string().contains("claim and credential"));
-    }
-
-    #[test]
-    fn claim_and_pii_mutually_exclusive() {
-        let s = schema(
-            "myapp",
-            vec![field("email", |a| {
-                a.pii = true;
-                a.claim = true;
-            })],
-        );
-        let err = s.validate().unwrap_err();
-        assert!(err.to_string().contains("claim and pii"));
-    }
-
-    #[test]
-    fn claim_and_secret_mutually_exclusive() {
-        let s = schema(
-            "myapp",
-            vec![field("api_key", |a| {
-                a.secret = true;
-                a.claim = true;
-            })],
-        );
-        let err = s.validate().unwrap_err();
-        assert!(err.to_string().contains("claim and secret"));
-    }
-
-    #[test]
     fn no_claim_fields_returns_empty() {
         let s = schema(
             "myapp",
             vec![
-                field("password", |a| a.credential = true),
-                field("org", |a| a.index = true),
+                field("password", legacy_credential()),
+                field("org", FieldKind::Index { claim: None }),
             ],
         );
         assert!(s.claim_fields().is_empty());
     }
 
     #[test]
-    fn claim_field_defaults_false_on_deserialize() {
-        // Simulate a schema stored before claim annotation existed
-        let json = r#"{"name":"legacy","fields":[{"name":"role","field_type":"string","annotations":{"index":true}}]}"#;
-        let parsed: Schema = serde_json::from_str(json).unwrap();
-        assert!(!parsed.fields[0].annotations.claim);
-        assert!(parsed.claim_fields().is_empty());
-    }
-
-    #[test]
-    fn lockout_defaults_true() {
-        let a = FieldAnnotations::default();
-        assert!(a.lockout);
-    }
-
-    #[test]
     fn lockout_off_on_credential_valid() {
         let s = schema(
             "api_keys",
-            vec![field("key_secret", |a| {
-                a.credential = true;
-                a.lockout = false;
-            })],
+            vec![field(
+                "key_secret",
+                FieldKind::Credential(CredentialPolicy::default()),
+            )],
         );
         assert!(s.validate().is_ok());
     }
 
+    /// JSON lacking both `annotations` and `kind` deserializes to default
+    /// (Inert) — exercises the deserializer's default branch.
     #[test]
-    fn lockout_off_on_non_credential_rejected() {
+    fn no_annotations_no_kind_defaults_to_inert() {
+        let json = r#"{"name":"a","fields":[{"name":"display","field_type":"string"}]}"#;
+        let s: Schema = serde_json::from_str(json).unwrap();
+        assert!(matches!(s.fields[0].kind, FieldKind::Inert { claim: None }));
+    }
+
+    /// v2-form JSON with `kind` deserializes directly with policy values
+    /// preserved verbatim.
+    #[test]
+    fn v2_credential_kind_deserializes_with_policy() {
+        let json = r#"{"name":"a","fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":3,"duration_secs":60}}}]}"#;
+        let s: Schema = serde_json::from_str(json).unwrap();
+        assert!(s.fields[0].kind.is_credential());
+        let p = s.fields[0].kind.credential_policy().unwrap();
+        let l = p.lockout.as_ref().unwrap();
+        assert_eq!(l.max_attempts, 3);
+        assert_eq!(l.duration_secs, 60);
+    }
+
+    /// v1-form JSON with `annotations` is rejected with a pointer to the
+    /// migration tool.
+    #[test]
+    fn v1_annotations_key_rejected_with_migration_hint() {
+        let json = r#"{"name":"a","fields":[{"name":"password","field_type":"string","annotations":{"credential":true}}]}"#;
+        let err = serde_json::from_str::<Schema>(json)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("legacy `annotations` key"), "err was: {err}");
+        assert!(err.contains("SCHEMA MIGRATE"), "err was: {err}");
+    }
+
+    /// Serialize emits v2 canonical (`kind` only); re-parsing restores both
+    /// forms via the normalizer. Defines the migration tool's output shape.
+    #[test]
+    fn serialize_emits_v2_and_roundtrips() {
         let s = schema(
             "myapp",
             vec![
-                field("password", |a| a.credential = true),
-                field("role", |a| {
-                    a.index = true;
-                    a.lockout = false;
-                }),
+                field("email", FieldKind::Pii(PiiPolicy { searchable: true })),
+                field("password", legacy_credential()),
+                field(
+                    "role",
+                    FieldKind::Index {
+                        claim: Some(ClaimPolicy::default()),
+                    },
+                ),
             ],
         );
-        let err = s.validate().unwrap_err();
-        assert!(err.to_string().contains("lockout=false"));
+        let json = serde_json::to_string(&s).unwrap();
+        // No `annotations` key in output — v2 canonical form.
+        assert!(!json.contains("\"annotations\""));
+        assert!(json.contains("\"kind\""));
+        // Round-trip preserves routing behavior.
+        let parsed: Schema = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.credential_fields(), vec!["password"]);
+        assert_eq!(parsed.claim_fields(), vec!["role"]);
+        assert!(parsed.fields[0].kind.is_pii());
+    }
+
+    // --- Schema::credential_policy resolver ---
+
+    #[test]
+    fn credential_policy_resolver_returns_some_for_credential_field() {
+        let s = schema("myapp", vec![field("password", legacy_credential())]);
+        let p = s.credential_policy("password").unwrap();
+        // Default-derived from v1: legacy lockout, Argon2id.
+        assert_eq!(p.algorithm, PasswordAlgorithm::Argon2id);
+        assert!(p.lockout.is_some());
     }
 
     #[test]
-    fn lockout_defaults_true_on_deserialize() {
-        // Simulate a schema stored before the lockout annotation existed
-        let json = r#"{"name":"legacy","fields":[{"name":"password","field_type":"string","annotations":{"credential":true}}]}"#;
-        let parsed: Schema = serde_json::from_str(json).unwrap();
-        assert!(parsed.fields[0].annotations.lockout);
+    fn credential_policy_resolver_returns_none_for_non_credential() {
+        let s = schema(
+            "myapp",
+            vec![
+                field("password", legacy_credential()),
+                field("email", FieldKind::Pii(PiiPolicy { searchable: false })),
+            ],
+        );
+        assert!(s.credential_policy("email").is_none());
+    }
+
+    #[test]
+    fn credential_policy_resolver_returns_none_for_unknown_field() {
+        let s = schema("myapp", vec![field("password", legacy_credential())]);
+        assert!(s.credential_policy("nonexistent").is_none());
+    }
+
+    #[test]
+    fn field_lockout_reflects_per_field_policy_under_v2_input() {
+        let json = r#"{"name":"a","fields":[
+            {"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},
+            {"name":"key","field_type":"string","kind":{"type":"credential","algorithm":"sha256"}}
+        ]}"#;
+        let s: Schema = serde_json::from_str(json).unwrap();
+        assert!(s.field_lockout("password"));
+        assert!(!s.field_lockout("key"));
     }
 }

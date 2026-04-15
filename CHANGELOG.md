@@ -4,6 +4,51 @@ All notable changes to ShrouDB Sigil are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.0.0] - 2026-04-15
+
+### Added
+
+- `FieldKind` tagged enum (`inert` | `index` | `credential` | `pii` | `secret`) as the schema's per-field crypto-treatment selector. Mutual exclusion is now enforced by the type system rather than runtime validation.
+- Per-field `CredentialPolicy` (`algorithm`, `min_length`, `max_length`, `lockout`) inside the `credential` variant. One schema can now mix, e.g., an Argon2id `password` with lockout enabled and a `sha256` `api_key` with no lockout.
+- `PasswordAlgorithm::Sha256` — unkeyed SHA-256 with constant-time comparison, for high-entropy machine credentials (256-bit CSPRNG-generated API keys). Gated on `min_length >= 32` at schema-validation time so it can't be attached to low-entropy fields.
+- `LockoutPolicy`, `PiiPolicy`, `SecretPolicy`, `ClaimPolicy` nested policy types carried only by the variants where they apply.
+- `EngineResourceConfig` (currently just `max_concurrent_hashes: u32`) for true engine-resource knobs.
+- `shroudb-sigil-cli SCHEMA MIGRATE --store <path> [--dry-run]` — one-shot tool that rewrites v1 schemas stored on disk into v2 form. Idempotent.
+
+### Changed
+
+- Schema JSON and TOML wire shape: `annotations: { credential: true, ... }` is replaced with `kind: { type: "credential", ... }` (internally tagged on `type`). All schema samples in `README.md`, `DOCS.md`, `ABOUT.md`, `AGENTS.md`, and `protocol.toml` updated.
+- `SigilConfig::password_policy: PasswordPolicy` renamed to `engine_resources: EngineResourceConfig`. The algorithm, length bounds, and lockout settings that used to live there now live per-field on `CredentialPolicy`.
+- `CredentialManager` no longer holds a global policy — it receives a resolved `CredentialPolicy` per call, sourced from the schema via `Schema::credential_policy(field_name)`.
+- `protocol.toml` bumped to `2.0.0`. `FieldDef.annotations` replaced with `FieldDef.kind`; `FieldAnnotations` type block replaced with `FieldKind` + the nested policy types.
+
+### Removed
+
+- `FieldAnnotations` struct and its `validate()` cross-field rules (`credential ⊕ pii ⊕ secret ⊕ index` mutex, `searchable requires pii`, `claim invalid on credential/pii/secret`, `lockout=false requires credential=true`). Structurally impossible in the new shape.
+- `PasswordPolicy` struct. Its fields moved to `CredentialPolicy` (per-field) and `EngineResourceConfig` (engine-wide).
+- `SchemaFieldConfig` flat-boolean TOML keys in server config. The parser now rejects them with a pointer to `shroudb-sigil-cli SCHEMA MIGRATE`.
+- Engine-global lockout threshold, length bounds, and algorithm selection. All three are per-field in v2.
+
+### Security
+
+- Pre-v1.9.2 schemas had implicit `lockout: true` semantics. The migration tool preserves observable behavior by writing an explicit `LockoutPolicy { max_attempts: 5, duration_secs: 900 }` onto every migrated credential field that did not opt out via `lockout: false`. Upgrade does not silently weaken lockout for any existing schema.
+- `PasswordAlgorithm::Sha256` is deliberately unkeyed (not HMAC). The rationale: Sigil's `KeepOps` capability is explicitly one-way (`store_secret` / `delete_secret`; Sigil never reads secrets back), so an HMAC key would have to come from either a doctrine break on `KeepOps` or engine-startup config — both reintroduce the "Sigil deciding" coupling v2.0 exists to remove. At 256 bits of CSPRNG entropy, unkeyed SHA-256 + constant-time compare is cryptographically sufficient; HMAC's value is against offline brute-force of low-entropy inputs, which machine credentials are not. The schema-validation rule `Sha256 requires min_length >= 32` refuses the algorithm on low-entropy fields where this reasoning doesn't hold.
+
+### Migration
+
+Breaking change for schemas stored on disk and for schema TOML in server config. The server refuses to start against a v1 schema store.
+
+1. Stop the Sigil server.
+2. Run `shroudb-sigil-cli SCHEMA MIGRATE --store <path>` against the Sigil data directory. Use `--dry-run` first to preview. The tool is idempotent.
+3. Update any server-config TOML `[[schemas.fields]]` entries from flat booleans to the `kind = { type = "...", ... }` form. The migration tool prints guidance for this step.
+4. Restart the server.
+
+**Downstream repos** — not updated by this release; file issues against each:
+
+- `shroudb-moat` — embeds `SigilEngine` + `SigilConfig`. Needs the `password_policy` → `engine_resources` rename, the schema TOML format break propagated to its own seeded-schema config, and a 2.0 version pin on `shroudb-sigil-*` deps.
+- `shroudb-codegen` — reads `protocol.toml`. Regenerate client bindings; the `FieldAnnotations` type is gone, replaced by a tagged-union `FieldKind` that downstream codegen must handle.
+- `shroudb-crypto` — no code changes required; `sha256`, `constant_time_eq`, `password_hash`, `password_verify`, and `generate_api_key` are already exposed.
+
 ## [v1.9.2] - 2026-04-15
 
 ### Added

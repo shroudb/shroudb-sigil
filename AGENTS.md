@@ -12,7 +12,7 @@
 ## Workspace Layout
 
 ```
-shroudb-sigil-core/      # Domain types: Schema, FieldAnnotations, CredentialRecord, TokenPair, errors
+shroudb-sigil-core/      # Domain types: Schema, FieldKind, CredentialPolicy, CredentialRecord, TokenPair, errors
 shroudb-sigil-engine/    # SigilEngine, CredentialManager, SessionManager, JwtManager, WriteCoordinator
 shroudb-sigil-protocol/  # RESP3 command parsing + dispatch
 shroudb-sigil-server/    # TCP + HTTP binary
@@ -88,19 +88,19 @@ shroudb-sigil-cli/       # CLI tool
 
 Individual fields in `ENVELOPE CREATE`, `ENVELOPE UPDATE`, `USER CREATE`, and `USER UPDATE` payloads can include a blind wrapper. When `"blind": true` is present, Sigil skips server-side processing for that field and stores the pre-processed value directly.
 
-The blind wrapper is per-request, per-field -- not a schema annotation. Schema annotations still define what processing a field needs. The blind wrapper says "I already did that processing."
+The blind wrapper is per-request, per-field -- not part of the schema `kind`. The schema `FieldKind` still defines what processing a field needs. The blind wrapper says "I already did that processing."
 
-| Annotation | Blind `value` | Blind `tokens` | Skipped |
-|-----------|---------------|----------------|---------|
+| Field `kind` | Blind `value` | Blind `tokens` | Skipped |
+|--------------|---------------|----------------|---------|
 | `pii` | CiphertextEnvelope (from `shroudb-cipher-blind`) | — | Cipher.encrypt() |
-| `pii` + `searchable` | CiphertextEnvelope | Base64 BlindTokenSet (from `shroudb-veil-blind`) | Cipher + Veil |
-| `credential` | Pre-hashed string | — | Argon2id hashing |
-| (none) | Error | — | No processing to skip |
+| `pii` with `searchable: true` | CiphertextEnvelope | Base64 BlindTokenSet (from `shroudb-veil-blind`) | Cipher + Veil |
+| `credential` | Pre-hashed string | — | Hashing step |
+| `inert` / `index` | Error | — | No processing to skip |
 
 ### Command Examples
 
 ```
-> SCHEMA REGISTER myapp {"fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"email","field_type":"string","annotations":{"pii":true,"searchable":true}},{"name":"org_id","field_type":"string","annotations":{"index":true}}]}
+> SCHEMA REGISTER myapp {"fields":[{"name":"password","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}},{"name":"email","field_type":"string","kind":{"type":"pii","searchable":true}},{"name":"org_id","field_type":"string","kind":{"type":"index"}}]}
 {"status":"ok","version":1}
 
 > USER CREATE myapp alice {"password":"s3cret","email":"alice@example.com","org_id":"acme"}
@@ -184,7 +184,7 @@ Middleware stack: CORS → CSRF (POST only, Origin/Referer validation) → Rate 
 # Register schema
 curl -X POST http://localhost:6500/sigil/schemas \
   -H "Content-Type: application/json" \
-  -d '{"name":"myapp","fields":[{"name":"password","field_type":"string","annotations":{"credential":true}},{"name":"email","field_type":"string","annotations":{"index":true}}]}'
+  -d '{"name":"myapp","fields":[{"name":"password","field_type":"string","kind":{"type":"credential"}},{"name":"email","field_type":"string","kind":{"type":"index"}}]}'
 
 # Create user
 curl -X POST http://localhost:6500/sigil/myapp/users \
@@ -204,8 +204,29 @@ curl -X POST http://localhost:6500/sigil/myapp/sessions \
 
 ```rust
 pub struct Schema { pub name: String, pub fields: Vec<FieldDef> }
-pub struct FieldDef { pub name: String, pub field_type: FieldType, pub annotations: FieldAnnotations }
-pub struct FieldAnnotations { pub credential: bool, pub pii: bool, pub searchable: bool, pub secret: bool, pub index: bool }
+pub struct FieldDef { pub name: String, pub field_type: FieldType, pub kind: FieldKind, pub required: bool }
+
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FieldKind {
+    Inert { claim: Option<ClaimPolicy> },
+    Index { claim: Option<ClaimPolicy> },
+    Credential(CredentialPolicy),
+    Pii(PiiPolicy),
+    Secret(SecretPolicy),
+}
+
+pub struct CredentialPolicy {
+    pub algorithm: PasswordAlgorithm,    // Argon2id (default), Sha256, + legacy import-only variants
+    pub min_length: Option<usize>,       // None → 8 (or 32 for Sha256)
+    pub max_length: Option<usize>,       // None → 128
+    pub lockout: Option<LockoutPolicy>,  // None → no lockout
+}
+pub struct LockoutPolicy { pub max_attempts: u32, pub duration_secs: u64 }
+pub struct PiiPolicy     { pub searchable: bool }
+pub struct SecretPolicy  { pub rotation_days: Option<u32> }
+pub struct ClaimPolicy   { pub as_name: Option<String> }
+pub struct EngineResourceConfig { pub max_concurrent_hashes: u32 }  // replaces PasswordPolicy
+
 pub struct EnvelopeRecord { pub entity_id: String, pub fields: HashMap<String, Value>, pub created_at: u64, pub updated_at: u64 }
 pub struct CredentialRecord { pub entity_id: String, pub hash: String, pub algorithm: PasswordAlgorithm, pub failed_attempts: u32, pub locked_until: Option<u64>, /* ... */ }
 pub struct TokenPair { pub access_token: String, pub refresh_token: String, pub expires_in: u64 }
@@ -215,13 +236,13 @@ pub enum FieldTreatment { Credential, EncryptedPii, SearchableEncrypted, Version
 ### Field Routing
 
 ```rust
-// Routing determined by annotations:
-credential=true                  → Argon2id hash (internal)
-pii=true AND searchable=true     → Cipher encrypt + Veil blind index
-pii=true                         → Cipher encrypt
-secret=true                      → Keep versioned storage
-index=true                       → Plaintext lookup index
-(none)                           → Stored as-is (inert)
+// Routing determined by FieldKind variant:
+Credential(policy)                → hash per policy.algorithm (Argon2id or Sha256)
+Pii(PiiPolicy { searchable: true }) → Cipher encrypt + Veil blind index
+Pii(PiiPolicy { searchable: false }) → Cipher encrypt
+Secret(_)                          → Keep versioned storage
+Index { .. }                       → Plaintext lookup index
+Inert { .. }                       → Stored as-is
 ```
 
 ### Capability Traits
@@ -281,12 +302,13 @@ Tokens belong to families. On `SESSION REFRESH`:
 
 ## Common Mistakes
 
-- `credential` and `pii` annotations are mutually exclusive — a field cannot be both
-- `searchable` requires `pii=true` — you can't blind-index an unencrypted field
-- `USER` commands require exactly one credential field in the schema; use `ENVELOPE` commands for multi-credential schemas
-- Non-Argon2id hashes (bcrypt, scrypt) imported via `CREDENTIAL IMPORT` are transparently rehashed to Argon2id on first successful verify
-- After 5 failed verification attempts (configurable), account is locked for 15 minutes
-- WriteCoordinator uses compensating deletes for rollback — if Cipher encrypt succeeds but Veil put fails, the Cipher ciphertext is cleaned up
+- A field's `kind` is a single tagged variant — `credential` / `pii` / `secret` / `index` / `inert`. Mutual exclusion is structural; runtime combinations from the v1 flat-boolean bag are not expressible.
+- `pii` with `searchable: true` requires Cipher + Veil capability — you can't blind-index an unencrypted field.
+- `USER` commands require exactly one credential field in the schema; use `ENVELOPE` commands for multi-credential schemas.
+- Non-Argon2id hashes (Argon2i, Argon2d, bcrypt, scrypt) imported via `CREDENTIAL IMPORT` are transparently rehashed to Argon2id on first successful verify.
+- Lockout is per-field via `CredentialPolicy.lockout: Option<LockoutPolicy>`. Omit for machine credentials (API keys) where lockout is a DoS vector.
+- `PasswordAlgorithm::Sha256` requires `min_length >= 32` on the field; schema registration fails otherwise.
+- WriteCoordinator uses compensating deletes for rollback — if Cipher encrypt succeeds but Veil put fails, the Cipher ciphertext is cleaned up.
 
 ## Related Crates
 

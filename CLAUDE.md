@@ -4,7 +4,7 @@ Schema-driven credential envelope engine for ShrouDB.
 
 ## Identity
 
-Sigil is a **field-level crypto router**, not an auth service. Developers register a credential envelope schema with annotations (`credential`, `pii`, `searchable`, `secret`, `index`), and Sigil applies the correct cryptographic treatment per field automatically. The Store just sees opaque bytes.
+Sigil is a **field-level crypto router**, not an auth service. Developers register a credential envelope schema where each field carries a tagged `FieldKind` variant (`inert`, `index`, `credential`, `pii`, `secret`), and Sigil applies the correct cryptographic treatment per field automatically. Credential policy is per-field: algorithm, length bounds, and optional lockout live on the `credential` variant's `CredentialPolicy`, not at engine level. The Store just sees opaque bytes.
 
 Sigil is entity-agnostic. The generic `ENVELOPE` commands work with any entity type — users, services, devices, API clients. The `USER` and `PASSWORD` commands are sugar that infer the credential field from the schema. Internally, both paths use the same `EnvelopeRecord` and `entity_id` throughout.
 

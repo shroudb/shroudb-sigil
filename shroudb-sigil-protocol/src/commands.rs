@@ -694,7 +694,7 @@ mod tests {
             "SCHEMA",
             "REGISTER",
             "myapp",
-            r#"{"fields":[{"name":"pw","field_type":"string","annotations":{"credential":true}}]}"#,
+            r#"{"fields":[{"name":"pw","field_type":"string","kind":{"type":"credential","lockout":{"max_attempts":5,"duration_secs":900}}}]}"#,
         ];
         let cmd = parse_command(&args).unwrap();
         assert!(matches!(cmd, SigilCommand::SchemaRegister { schema } if schema.name == "myapp"));
@@ -818,7 +818,7 @@ mod tests {
             "ALTER",
             "myapp",
             "ADD",
-            r#"{"name":"phone","field_type":"string","annotations":{"pii":true}}"#,
+            r#"{"name":"phone","field_type":"string","kind":{"type":"pii"}}"#,
         ];
         let cmd = parse_command(&args).unwrap();
         assert!(

@@ -1,11 +1,11 @@
 # Sigil Protocol Specification
 #
-# Machine-readable definition of the Sigil v1 protocol.
+# Machine-readable definition of the Sigil v2 protocol.
 # Used by shroudb-codegen to generate typed client libraries in any language.
 
 [protocol]
 name = "sigil"
-version = "1.2.0"
+version = "2.0.0"
 description = "Schema-driven credential envelope engine"
 default_tcp_port = 6499
 default_http_port = 6500
@@ -57,7 +57,7 @@ description = "Credential verification failed (wrong password)"
 http_equiv = 401
 
 [error_codes.ACCOUNT_LOCKED]
-description = "Account locked after too many failed attempts. Only emitted for credential fields with the default lockout=true annotation."
+description = "Account locked after too many failed attempts. Only emitted for credential fields whose CredentialPolicy carries a non-null LockoutPolicy."
 http_equiv = 429
 
 [error_codes.INVALID_TOKEN]
@@ -85,7 +85,7 @@ syntax = "SCHEMA REGISTER <name> <json>"
 description = "Register a credential envelope schema"
 parameters = [
     { name = "name", type = "string", required = true, description = "Schema name (used as namespace prefix)" },
-    { name = "json", type = "json", required = true, description = "Schema definition: fields with type and annotations" },
+    { name = "json", type = "json", required = true, description = "Schema definition: fields with type and kind" },
 ]
 response = { version = "integer" }
 http = { method = "POST", path = "/sigil/schemas", request_body = "Schema" }
@@ -121,7 +121,7 @@ http = { method = "PATCH", path = "/sigil/schemas/{name}" }
 
 [commands.ENVELOPE_CREATE]
 syntax = "ENVELOPE CREATE <schema> <id> <json>"
-description = "Create an envelope with field routing per schema annotations"
+description = "Create an envelope with field routing per schema kind"
 parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true, description = "Entity ID" },
@@ -427,20 +427,82 @@ description = "A field in a credential schema"
 fields = [
     { name = "name", type = "string" },
     { name = "field_type", type = "string", description = "string | integer | boolean | bytes" },
-    { name = "annotations", type = "FieldAnnotations" },
+    { name = "kind", type = "FieldKind", description = "Cryptographic treatment variant. Internally tagged on `type`." },
     { name = "required", type = "boolean", default = true, description = "Whether this field is required on envelope creation. Fields added via ALTER are optional." },
 ]
 
-[types.FieldAnnotations]
-description = "Cryptographic treatment annotations for a field"
+[types.FieldKind]
+description = "Cryptographic treatment for a field. Tagged-union: exactly one variant per field. Internally tagged on `type` (values: `inert` | `index` | `credential` | `pii` | `secret`)."
+variants = [
+    { type = "inert", description = "Stored as-is. No crypto treatment.", fields = [
+        { name = "claim", type = "ClaimPolicy", required = false, description = "Auto-include this field's value in JWT claims on session create/refresh." },
+    ] },
+    { type = "index", description = "Plaintext lookup index.", fields = [
+        { name = "claim", type = "ClaimPolicy", required = false, description = "Auto-include this field's value in JWT claims on session create/refresh." },
+    ] },
+    { type = "credential", description = "Hashed + verified via CredentialPolicy.algorithm. Never returned by ENVELOPE GET.", fields = [
+        { name = "algorithm", type = "string", default = "argon2id", description = "argon2id (default) | sha256 (for high-entropy machine credentials) | argon2i | argon2d | bcrypt | scrypt (import-only legacy)" },
+        { name = "min_length", type = "integer", required = false, description = "None resolves to DEFAULT_MIN_LENGTH=8, or SHA256_MIN_LENGTH=32 for sha256." },
+        { name = "max_length", type = "integer", required = false, description = "None resolves to DEFAULT_MAX_LENGTH=128." },
+        { name = "lockout", type = "LockoutPolicy", required = false, description = "Presence of this struct enables failed-attempt lockout on this field. Absent (null) means no lockout. Absent is the right choice for machine-auth credentials where lockout is a denial-of-service vector." },
+    ] },
+    { type = "pii", description = "Encrypted at rest via Cipher. Optionally blind-indexed via Veil.", fields = [
+        { name = "searchable", type = "boolean", default = false, description = "Add blind-index entries via Veil." },
+    ] },
+    { type = "secret", description = "Versioned storage via Keep. Sigil never reads back.", fields = [
+        { name = "rotation_days", type = "integer", required = false, description = "Advisory rotation interval in days." },
+    ] },
+]
+
+[types.CredentialPolicy]
+description = "Per-field credential policy embedded in the `credential` FieldKind variant. Replaces the v1 engine-global PasswordPolicy."
 fields = [
-    { name = "credential", type = "boolean", default = false, description = "Argon2id hash/verify/lockout" },
-    { name = "pii", type = "boolean", default = false, description = "Encrypt via Cipher" },
-    { name = "searchable", type = "boolean", default = false, description = "Blind index via Veil (requires pii)" },
-    { name = "secret", type = "boolean", default = false, description = "Versioned storage via Keep" },
-    { name = "index", type = "boolean", default = false, description = "Plaintext lookup index" },
-    { name = "claim", type = "boolean", default = false, description = "Include in JWT claims on session create/refresh. Mutually exclusive with credential, pii, secret." },
-    { name = "lockout", type = "boolean", default = true, description = "Enforce lockout on repeated verify failures. Only valid on credential fields. Set to false for machine-auth (API keys) where lockout is a denial-of-service vector; leave true for human-auth (passwords) where brute-force mitigation is the goal. When false, ACCOUNT_LOCKED is never returned for this field." },
+    { name = "algorithm", type = "string", default = "argon2id", description = "argon2id | sha256 (machine credentials, requires min_length >= 32) | argon2i | argon2d | bcrypt | scrypt (legacy import-only)" },
+    { name = "min_length", type = "integer", required = false, description = "None resolves to DEFAULT_MIN_LENGTH=8, or SHA256_MIN_LENGTH=32 for sha256." },
+    { name = "max_length", type = "integer", required = false, description = "None resolves to DEFAULT_MAX_LENGTH=128." },
+    { name = "lockout", type = "LockoutPolicy", required = false, description = "Presence enables lockout; absent (null) disables." },
+]
+
+[types.LockoutPolicy]
+description = "Failed-attempt lockout settings for a credential field."
+fields = [
+    { name = "max_attempts", type = "integer", description = "Threshold after which the field is locked. Must be > 0." },
+    { name = "duration_secs", type = "integer", description = "Lockout duration in seconds. Must be > 0." },
+]
+
+[types.PiiPolicy]
+description = "Settings for the `pii` FieldKind variant."
+fields = [
+    { name = "searchable", type = "boolean", default = false, description = "Add blind-index entries via Veil (requires Veil capability)." },
+]
+
+[types.SecretPolicy]
+description = "Settings for the `secret` FieldKind variant."
+fields = [
+    { name = "rotation_days", type = "integer", required = false, description = "Advisory rotation interval in days." },
+]
+
+[types.ClaimPolicy]
+description = "JWT-claim inclusion settings. Only valid on `inert` and `index` FieldKind variants."
+fields = [
+    { name = "as_name", type = "string", required = false, description = "If set, the JWT claim is emitted under this key instead of the field name (e.g., `as_name = \"sub\"` to emit an index field as the JWT subject)." },
+]
+
+[types.EngineResourceConfig]
+description = "Engine-wide resource limits. Replaces the v1 PasswordPolicy."
+fields = [
+    { name = "max_concurrent_hashes", type = "integer", default = 4, description = "Semaphore size bounding concurrent Argon2id hashes. Prevents credential-hash DoS." },
+]
+
+[enums.PasswordAlgorithm]
+description = "Credential hashing algorithm. Chosen per-field via CredentialPolicy.algorithm."
+variants = [
+    { name = "argon2id", description = "Default. Memory-hard KDF for human credentials (passwords, PINs, recovery keys)." },
+    { name = "sha256", description = "Unkeyed SHA-256 with constant-time compare. For high-entropy machine credentials (e.g., 256-bit CSPRNG-generated API keys). Requires min_length >= 32. Deliberately not HMAC — see DOCS.md rationale." },
+    { name = "argon2i", description = "Import-only legacy. Transparently rehashed to argon2id on next successful verify." },
+    { name = "argon2d", description = "Import-only legacy. Transparently rehashed to argon2id on next successful verify." },
+    { name = "bcrypt", description = "Import-only legacy. Transparently rehashed to argon2id on next successful verify." },
+    { name = "scrypt", description = "Import-only legacy. Transparently rehashed to argon2id on next successful verify." },
 ]
 
 [types.SessionRecord]

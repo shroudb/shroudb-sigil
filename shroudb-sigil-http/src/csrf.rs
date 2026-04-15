@@ -21,7 +21,7 @@ use axum::response::{IntoResponse, Response};
 /// Origins allowed for CSRF validation.
 #[derive(Clone)]
 pub struct CsrfConfig {
-    /// Parsed allowed origins (e.g., "https://example.com").
+    /// Parsed allowed origins (e.g., `"https://example.com"`).
     /// Empty = allow all (dev mode).
     pub allowed_origins: Arc<Vec<String>>,
 }

@@ -1,12 +1,13 @@
-use crate::schema::FieldAnnotations;
+use crate::field_kind::FieldKind;
 
 /// The cryptographic treatment to apply to a field value.
 ///
-/// Determined by the field's annotations at schema registration time.
+/// Determined by the field's `FieldKind` at schema registration time.
 /// The engine uses this to route field values to the appropriate handler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldTreatment {
-    /// Hash with Argon2id. Supports password verify, change, lockout.
+    /// Hash with Argon2id, or compare against a SHA-256 tag (`Sha256` policy).
+    /// Supports verify, change, and optional lockout.
     Credential,
     /// Encrypt at rest via Cipher engine.
     EncryptedPii,
@@ -20,81 +21,64 @@ pub enum FieldTreatment {
     Inert,
 }
 
-/// Determine the treatment for a field based on its annotations.
-pub fn route_field(annotations: &FieldAnnotations) -> FieldTreatment {
-    if annotations.credential {
-        FieldTreatment::Credential
-    } else if annotations.pii && annotations.searchable {
-        FieldTreatment::SearchableEncrypted
-    } else if annotations.pii {
-        FieldTreatment::EncryptedPii
-    } else if annotations.secret {
-        FieldTreatment::VersionedSecret
-    } else if annotations.index {
-        FieldTreatment::PlaintextIndex
-    } else {
-        FieldTreatment::Inert
+/// Determine the treatment for a field directly from its `FieldKind`.
+///
+/// Variants map 1:1 to treatments — no runtime mutex checks, no accidental
+/// misclassification.
+pub fn route_field_from_kind(kind: &FieldKind) -> FieldTreatment {
+    match kind {
+        FieldKind::Credential(_) => FieldTreatment::Credential,
+        FieldKind::Pii(p) if p.searchable => FieldTreatment::SearchableEncrypted,
+        FieldKind::Pii(_) => FieldTreatment::EncryptedPii,
+        FieldKind::Secret(_) => FieldTreatment::VersionedSecret,
+        FieldKind::Index { .. } => FieldTreatment::PlaintextIndex,
+        FieldKind::Inert { .. } => FieldTreatment::Inert,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::field_kind::{CredentialPolicy, PiiPolicy, SecretPolicy};
 
-    fn ann(f: impl FnOnce(&mut FieldAnnotations)) -> FieldAnnotations {
-        let mut a = FieldAnnotations::default();
-        f(&mut a);
-        a
+    #[test]
+    fn kind_credential_routes_to_credential() {
+        let k = FieldKind::Credential(CredentialPolicy::default());
+        assert_eq!(route_field_from_kind(&k), FieldTreatment::Credential);
     }
 
     #[test]
-    fn credential_field() {
-        assert_eq!(
-            route_field(&ann(|a| a.credential = true)),
-            FieldTreatment::Credential
-        );
+    fn kind_pii_non_searchable_routes_to_encrypted_pii() {
+        let k = FieldKind::Pii(PiiPolicy { searchable: false });
+        assert_eq!(route_field_from_kind(&k), FieldTreatment::EncryptedPii);
     }
 
     #[test]
-    fn pii_field() {
+    fn kind_pii_searchable_routes_to_searchable_encrypted() {
+        let k = FieldKind::Pii(PiiPolicy { searchable: true });
         assert_eq!(
-            route_field(&ann(|a| a.pii = true)),
-            FieldTreatment::EncryptedPii
-        );
-    }
-
-    #[test]
-    fn searchable_pii_field() {
-        assert_eq!(
-            route_field(&ann(|a| {
-                a.pii = true;
-                a.searchable = true;
-            })),
+            route_field_from_kind(&k),
             FieldTreatment::SearchableEncrypted
         );
     }
 
     #[test]
-    fn secret_field() {
-        assert_eq!(
-            route_field(&ann(|a| a.secret = true)),
-            FieldTreatment::VersionedSecret
-        );
+    fn kind_secret_routes_to_versioned_secret() {
+        let k = FieldKind::Secret(SecretPolicy {
+            rotation_days: None,
+        });
+        assert_eq!(route_field_from_kind(&k), FieldTreatment::VersionedSecret);
     }
 
     #[test]
-    fn index_field() {
-        assert_eq!(
-            route_field(&ann(|a| a.index = true)),
-            FieldTreatment::PlaintextIndex
-        );
+    fn kind_index_routes_to_plaintext_index() {
+        let k = FieldKind::Index { claim: None };
+        assert_eq!(route_field_from_kind(&k), FieldTreatment::PlaintextIndex);
     }
 
     #[test]
-    fn no_annotations() {
-        assert_eq!(
-            route_field(&FieldAnnotations::default()),
-            FieldTreatment::Inert
-        );
+    fn kind_inert_routes_to_inert() {
+        let k = FieldKind::Inert { claim: None };
+        assert_eq!(route_field_from_kind(&k), FieldTreatment::Inert);
     }
 }

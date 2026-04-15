@@ -1,14 +1,16 @@
-# TODO
+# Design Record — Schema v2.0
+
+> Status: shipped in v2.0.0. This file is retained as the motivation / rationale record for the refactor. For how to use the new shapes, see `DOCS.md`, `README.md`, and `protocol.toml`.
 
 ## Schema v2.0: `FieldKind` enum + per-field credential policy
 
-**Problem:** Today's `FieldAnnotations` is a flat bag of booleans (`credential`, `pii`, `searchable`, `secret`, `index`, `claim`, `lockout`) with runtime validation enforcing mutual exclusion and dependency rules. `PasswordPolicy` is engine-global, so every credential field across every schema gets the same algorithm, lockout thresholds, and length validation — that's Sigil hard-coding a "passwords work like this" decision, contradicting the schema-driven thesis.
+**Problem (as it stood pre-v2.0):** `FieldAnnotations` was a flat bag of booleans (`credential`, `pii`, `searchable`, `secret`, `index`, `claim`, `lockout`) with runtime validation enforcing mutual exclusion and dependency rules. `PasswordPolicy` was engine-global, so every credential field across every schema got the same algorithm, lockout thresholds, and length validation — Sigil hard-coding a "passwords work like this" decision, contradicting the schema-driven thesis.
 
-The recently-shipped `lockout: bool` annotation is a wedge that proves per-field credential policy works. The full v2.0 refactor:
+The v1.9.2 `lockout: bool` annotation was a wedge that proved per-field credential policy worked. The v2.0 refactor:
 
-1. Replaces `FieldAnnotations` with a `kind: FieldKind` enum so mutual exclusion is enforced by the type system, not runtime checks.
-2. Moves credential policy (algorithm, length bounds, lockout) onto a nested `CredentialPolicy` struct inside the `Credential` variant.
-3. Shrinks or deletes `PasswordPolicy`, leaving only true engine-resource concerns at config level.
+1. Replaced `FieldAnnotations` with a `kind: FieldKind` enum so mutual exclusion is enforced by the type system, not runtime checks.
+2. Moved credential policy (algorithm, length bounds, lockout) onto a nested `CredentialPolicy` struct inside the `Credential` variant.
+3. Shrank `PasswordPolicy` to `EngineResourceConfig`, leaving only true engine-resource concerns at config level.
 
 ### Target shape
 
@@ -52,7 +54,7 @@ JSON examples:
 
 // API key — fast hash, no lockout (omit the field)
 { "name": "key_secret", "field_type": "string",
-  "kind": { "type": "credential", "algorithm": "sha256_hmac" } }
+  "kind": { "type": "credential", "algorithm": "sha256" } }
 
 // Searchable PII
 { "name": "email", "field_type": "string",
@@ -99,33 +101,39 @@ JSON examples:
 
 ### Migration
 
-This is a breaking schema-format change. No serde shim cleanly migrates `{"annotations": {"credential": true}}` to `{"kind": {"type": "credential"}}` without ambiguity. Path:
+This was a breaking schema-format change. No serde shim cleanly migrates `{"annotations": {"credential": true}}` to `{"kind": {"type": "credential"}}` without ambiguity. Path taken:
 
-1. Bump to v2.0.0.
-2. Ship a one-shot migration tool (`shroudb-sigil-cli SCHEMA MIGRATE`) that reads stored v1 schemas and rewrites them in v2 form.
-3. Document the JSON format change in the changelog and DOCS.md.
-4. Update downstream consumers (Moat, codegen, any SDK examples).
+1. Version bumped to v2.0.0.
+2. Shipped a one-shot migration tool (`shroudb-sigil-cli SCHEMA MIGRATE --store <path> [--dry-run]`) that reads stored v1 schemas and rewrites them in v2 form. Idempotent. Preserves pre-v1.9.2 implicit lockout by emitting an explicit `LockoutPolicy { max_attempts: 5, duration_secs: 900 }` on migrated credential fields.
+3. JSON format change documented in the changelog and `DOCS.md`.
+4. Downstream consumers (Moat, codegen, SDK examples) flagged for update in the `v2.0.0` release notes.
 
-### Implementation sketch
+### Resolved decisions
 
-1. Resolve the open design questions (separate design pass before code).
-2. Define `FieldKind`, `CredentialPolicy`, `LockoutPolicy`, `PiiPolicy`, `SecretPolicy`, `ClaimPolicy` in `shroudb-sigil-core/src/schema.rs`.
-3. Delete the old `FieldAnnotations` struct and the entire `validate()` method body — it collapses into structural impossibility.
-4. Add `Schema::credential_policy(field_name) -> Option<&CredentialPolicy>` resolver.
-5. Refactor `CredentialManager` to take a resolved `CredentialPolicy` per-call instead of holding a `PasswordPolicy`. Keep the `Semaphore` for hash concurrency.
-6. Update every call site in `engine.rs` to resolve the policy and pass it through.
-7. Shrink or delete `PasswordPolicy` per the decision in question (3).
-8. Tests: per-field algorithm selection, per-field length bounds, per-field lockout thresholds, mixed-policy schemas (e.g., `users` schema with Argon2id + lockout, `api_keys` schema with SHA256-HMAC + no lockout, in the same engine).
-9. Migration tool + tests against v1 schema fixtures.
-10. Docs: `protocol.toml` (full type rewrite), `README.md`, `DOCS.md`, `ABOUT.md`. The "Account Lockout" section in `DOCS.md` folds into a broader "Credential Policy" section.
+The five open questions above have been settled as follows:
 
-### Files in scope
+- **Q1 — Non-Argon2id path.** Ship `PasswordAlgorithm::Sha256` (unkeyed SHA-256 with constant-time comparison). Deliberately *not* HMAC: Sigil's `KeepOps` capability is explicitly one-way (`store_secret` / `delete_secret`; "Sigil never reads secrets back"), so an HMAC key would have to come from either a doctrine break on `KeepOps` or engine-startup config — both reintroduce the "Sigil deciding" coupling this refactor exists to remove. For 256-bit CSPRNG-generated API keys (as produced by `shroudb-crypto::generate_api_key`), unkeyed SHA-256 + constant-time compare is cryptographically sufficient; HMAC's value is defending against offline brute-force of *low-entropy* inputs, which machine credentials are not. Validation rule: `algorithm == Sha256` requires `min_length >= 32` (refuses use on short/low-entropy fields). Future Sha256Hmac path is not blocked — it can be added as another variant when/if low-entropy machine creds appear with a solved key-sourcing story.
+- **Q2 — Default location.** Hard-coded constants in `shroudb-sigil-core` (`DEFAULT_MIN_LENGTH = 8`, `DEFAULT_MAX_LENGTH = 128`, `SHA256_MIN_LENGTH = 32`). No engine-config fallback — engine-side overrides would reintroduce the coupling v2.0 removes.
+- **Q3 — `PasswordPolicy` survival.** Option (a): shrink to `EngineResourceConfig { max_concurrent_hashes: u32 }` in `shroudb-sigil-core::credential`. Rename `SigilConfig::password_policy` → `engine_resources`. Option (b) adds constructor churn with no upside; option (c) contradicts Q2.
+- **Q4 — `CredentialPolicy` validation.** Minimum viable: `min_length > 0`; `max_length >= min_length` when both set; `LockoutPolicy.max_attempts > 0` and `duration_secs > 0`; `algorithm == Sha256` requires `min_length >= 32`. No algorithm × length cross-checks beyond the Sha256 floor.
+- **Q5 — `claim` placement.** Strict: `claim: Option<ClaimPolicy>` lives on `Inert` and `Index` variants only. The whole point of the refactor is making invalid states unrepresentable; hoisting `claim` to `FieldDef` reintroduces the runtime check v2.0 deletes.
 
-- `shroudb-sigil-core/src/schema.rs` — `FieldKind` enum, policies, resolver
-- `shroudb-sigil-core/src/credential.rs` — `PasswordPolicy` shape decision
-- `shroudb-sigil-engine/src/credential.rs` — `CredentialManager` API change
+### Delivery plan (as shipped)
+
+Two PRs against `main`:
+
+- **PR1 — Core types + engine wiring (Phases 1–4).** Introduced v2 types alongside v1, cut the engine over to per-field `CredentialPolicy` (including `Sha256` dispatch), rewrote test fixtures to v2 form. A transitional deserializer accepted both v1 (`annotations`) and v2 (`kind`) JSON so existing tests kept passing throughout. No wire-format break. Released as `v2.0.0-rc.1` for downstream testing.
+- **PR2 — Format break + migration + docs (Phases 5–8).** Server config TOML flipped to v2-only, `FieldAnnotations` + `PasswordPolicy` deleted, `shroudb-sigil-cli SCHEMA MIGRATE` shipped, all docs (`protocol.toml`, `README.md`, `DOCS.md`, `ABOUT.md`, `CHANGELOG.md`) rewritten, `protocol.toml` version bumped to `2.0.0`.
+
+Cross-repo impact: `shroudb-moat` gets `SigilConfig` rename (`password_policy` → `engine_resources`) + schema-config TOML format break + 2.0 version pin (and its own migration step if it stores schemas via the embedded engine); `shroudb-codegen` regenerates from the new `protocol.toml` (tagged-union types replace `FieldAnnotations`). `shroudb-crypto` required zero code changes — `hmac_sign`, `sha256`, `constant_time_eq`, `password_hash`, `password_verify`, and `generate_api_key` were already exposed.
+
+### Files touched
+
+- `shroudb-sigil-core/src/field_kind.rs` — new `FieldKind` enum, policies, resolver
+- `shroudb-sigil-core/src/credential.rs` — `EngineResourceConfig` replaces `PasswordPolicy`
+- `shroudb-sigil-engine/src/credential.rs` — `CredentialManager` takes per-call `CredentialPolicy`
 - `shroudb-sigil-engine/src/engine.rs` — call-site wiring
-- `shroudb-sigil-engine/src/write_coordinator.rs` — length validation now needs schema context
-- `shroudb-sigil-server/src/config.rs` — server-side schema config mirror (also needs v2 format)
-- `shroudb-sigil-cli/` — new `SCHEMA MIGRATE` subcommand
-- `protocol.toml`, `README.md`, `DOCS.md`, `ABOUT.md`, `CHANGELOG.md`
+- `shroudb-sigil-engine/src/write_coordinator.rs` — length validation now schema-aware
+- `shroudb-sigil-server/src/config.rs` — server-side schema config mirror (v2 format only)
+- `shroudb-sigil-cli/` — `SCHEMA MIGRATE` subcommand
+- `protocol.toml`, `README.md`, `DOCS.md`, `ABOUT.md`, `CHANGELOG.md`, `AGENTS.md`, `shroudb-sigil.md`, `CLAUDE.md`

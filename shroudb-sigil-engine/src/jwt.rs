@@ -227,7 +227,9 @@ mod tests {
     use super::*;
     use crate::schema_registry::SchemaRegistry;
     use crate::schema_registry::tests::create_test_store;
-    use shroudb_sigil_core::schema::{FieldAnnotations, FieldDef, FieldType, Schema};
+    use shroudb_sigil_core::credential::PasswordAlgorithm;
+    use shroudb_sigil_core::field_kind::{CredentialPolicy, FieldKind, LockoutPolicy};
+    use shroudb_sigil_core::schema::{FieldDef, FieldType, Schema};
 
     async fn setup() -> (
         Arc<shroudb_storage::EmbeddedStore>,
@@ -240,15 +242,20 @@ mod tests {
             .register(Schema {
                 name: "myapp".to_string(),
                 version: 1,
-                fields: vec![FieldDef {
-                    name: "password".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        credential: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                }],
+                fields: vec![FieldDef::with_kind(
+                    "password",
+                    FieldType::String,
+                    FieldKind::Credential(CredentialPolicy {
+                        algorithm: PasswordAlgorithm::Argon2id,
+                        min_length: None,
+                        max_length: None,
+                        lockout: Some(LockoutPolicy {
+                            max_attempts: 5,
+                            duration_secs: 900,
+                        }),
+                    }),
+                    true,
+                )],
             })
             .await
             .unwrap();

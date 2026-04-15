@@ -11,7 +11,7 @@
 
 ## Role in Platform
 
-Sigil is the credential envelope engine — a field-level crypto router. Developers register a schema with field annotations (`credential`, `pii`, `searchable`, `secret`, `index`), and Sigil automatically routes each field to the correct cryptographic treatment: Argon2id hashing, Cipher encryption, Veil blind indexing, Keep versioned secret storage, or plaintext lookup. Without Sigil, applications must manually orchestrate per-field crypto across multiple engines, defeating the platform's "declare intent, not implementation" contract. Sigil also owns the session lifecycle (JWT signing, refresh token rotation with reuse detection) and password policy enforcement (lockout, transparent rehashing).
+Sigil is the credential envelope engine — a field-level crypto router. Developers register a schema where each field carries a tagged `FieldKind` variant (`inert` | `index` | `credential` | `pii` | `secret`), and Sigil automatically routes each field to the correct cryptographic treatment: per-field credential hashing (Argon2id or unkeyed SHA-256 for machine credentials), Cipher encryption, Veil blind indexing, Keep versioned secret storage, or plaintext lookup. Without Sigil, applications must manually orchestrate per-field crypto across multiple engines, defeating the platform's "declare intent, not implementation" contract. Sigil also owns the session lifecycle (JWT signing, refresh token rotation with reuse detection) and per-field credential policy enforcement (algorithm selection, length bounds, optional lockout, transparent rehashing).
 
 ---
 
@@ -53,13 +53,13 @@ Blind mode variant: client submits `{"blind": true, "value": "<ciphertext>", "to
 
 ### Capability gating
 
-Engine capabilities are optional trait objects in `Capabilities` struct: `cipher: Option<Box<dyn CipherOps>>`, `veil: Option<Box<dyn VeilOps>>`, `keep: Option<Box<dyn KeepOps>>`, `sentry: Option<Arc<dyn PolicyEvaluator>>`, `chronicle: Option<Arc<dyn ChronicleOps>>`. Schema registration is rejected if field annotations require a missing capability (fail-closed). No feature flags or license checks — gating is purely capability presence.
+Engine capabilities are optional trait objects in `Capabilities` struct: `cipher: Option<Box<dyn CipherOps>>`, `veil: Option<Box<dyn VeilOps>>`, `keep: Option<Box<dyn KeepOps>>`, `sentry: Option<Arc<dyn PolicyEvaluator>>`, `chronicle: Option<Arc<dyn ChronicleOps>>`. Schema registration is rejected if a field's `FieldKind` requires a missing capability (fail-closed). No feature flags or license checks — gating is purely capability presence.
 
 ---
 
 ## Cryptographic Constructs
 
-**Password hashing:** Argon2id v19 (default parameters from `argon2` 0.5 crate). OsRng salt generation. Semaphore-limited concurrent hashes (default 4, ~64 MiB each). Supports import of Argon2i, Argon2d, bcrypt ($2a$/$2b$/$2y$), and scrypt hashes. Transparent rehash to Argon2id on successful verification of non-Argon2id hashes.
+**Credential hashing:** chosen per-field via `CredentialPolicy.algorithm`. `argon2id` (v19, default parameters from `argon2` 0.5 crate, OsRng salt) for human credentials — semaphore-limited concurrent hashes (default 4, ~64 MiB each) via `EngineResourceConfig.max_concurrent_hashes`. `sha256` (unkeyed, constant-time compare) for high-entropy machine credentials, gated on `min_length >= 32`. Supports import of Argon2i, Argon2d, bcrypt ($2a$/$2b$/$2y$), and scrypt hashes. Transparent rehash to Argon2id on successful verification of non-Argon2id hashes.
 
 **JWT signing:** ES256 (ECDSA P-256) via `shroudb-crypto` / `ring` 0.17. Keys stored as PKCS8 in Store namespace `sigil.{schema}.keys`. Key lifecycle: Active → Draining → Retired. Verification tries all non-retired keys. 30-second expiry leeway. JWKS endpoint exposes public keys.
 
@@ -123,9 +123,9 @@ All six crates are MIT OR Apache-2.0. No feature flags fence commercial behavior
 
 **Extractable as independent product:** Yes, with caveats.
 
-Sigil standalone handles `credential` and `index`/`inert` annotations without any sibling engines — this covers password hashing, JWT sessions, envelope CRUD, and plaintext lookups. This is a functional identity/credential management system on its own.
+Sigil standalone handles `credential`, `index`, and `inert` `FieldKind` variants without any sibling engines — this covers credential hashing, JWT sessions, envelope CRUD, and plaintext lookups. This is a functional identity/credential management system on its own.
 
-PII encryption, searchable encryption, and versioned secret storage require Cipher, Veil, and Keep respectively. Without them, schemas using those annotations are rejected at registration (fail-closed). The trait-based capability pattern means alternative implementations could be wired without forking Sigil.
+PII encryption, searchable encryption, and versioned secret storage require Cipher, Veil, and Keep respectively. Without them, schemas using those kinds are rejected at registration (fail-closed). The trait-based capability pattern means alternative implementations could be wired without forking Sigil.
 
 Extracting Sigil requires bringing `shroudb-store`, `shroudb-storage`, `shroudb-crypto`, `shroudb-acl`, `shroudb-protocol-wire`, and `shroudb-server-tcp` as dependencies — all from the private registry.
 
@@ -145,7 +145,7 @@ Open core + support tier. The standalone credential/session engine is the open-c
 
 **Library crate:** `SigilEngine<S>` embeddable in any Rust binary. Moat integration path defined but not yet implemented.
 
-**Infrastructure dependencies:** Embedded storage requires only filesystem. Remote engines (Cipher, Veil, Keep) optional — needed only for PII/searchable/secret field annotations. Chronicle optional for audit. No database, no external queue, no Redis.
+**Infrastructure dependencies:** Embedded storage requires only filesystem. Remote engines (Cipher, Veil, Keep) optional — needed only for PII/searchable/secret field kinds. Chronicle optional for audit. No database, no external queue, no Redis.
 
 **Self-hostable without expertise:** Yes for basic credential management. Engine integration (Cipher/Veil/Keep) requires deploying and configuring those engines.
 
@@ -167,7 +167,7 @@ Open core + support tier. The standalone credential/session engine is the open-c
 
 ## Architectural Moat (Component-Level)
 
-**Schema-driven field routing:** The core abstraction — declare field annotations, get correct crypto treatment automatically — is non-trivial to reproduce correctly. The combinatorial explosion (credential + pii mutual exclusion, searchable requiring pii, blind mode variants, all-or-nothing writes with compensating operations) encodes hard-won design decisions.
+**Schema-driven field routing:** The core abstraction — declare a `FieldKind` per field, get correct crypto treatment automatically — is non-trivial to reproduce correctly. The tagged-union design (mutual exclusion enforced by the type system), per-field `CredentialPolicy` (algorithm, length, lockout), blind mode variants, and all-or-nothing writes with compensating operations encode hard-won design decisions.
 
 **All-or-nothing write coordinator:** Multi-engine transactional writes with compensating rollback across Store, Cipher, Veil, and Keep. The compensating operation pattern with fail-closed audit is operationally complex to get right.
 

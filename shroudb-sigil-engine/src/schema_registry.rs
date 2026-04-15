@@ -182,10 +182,24 @@ impl<S: Store> SchemaRegistry<S> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use shroudb_sigil_core::schema::{FieldAnnotations, FieldDef, FieldType};
+    use shroudb_sigil_core::credential::PasswordAlgorithm;
+    use shroudb_sigil_core::field_kind::{CredentialPolicy, FieldKind, LockoutPolicy, PiiPolicy};
+    use shroudb_sigil_core::schema::{FieldDef, FieldType};
 
     pub(crate) async fn create_test_store() -> Arc<shroudb_storage::EmbeddedStore> {
         shroudb_storage::test_util::create_test_store("sigil-test").await
+    }
+
+    fn legacy_credential_kind() -> FieldKind {
+        FieldKind::Credential(CredentialPolicy {
+            algorithm: PasswordAlgorithm::Argon2id,
+            min_length: None,
+            max_length: None,
+            lockout: Some(LockoutPolicy {
+                max_attempts: 5,
+                duration_secs: 900,
+            }),
+        })
     }
 
     fn test_schema(name: &str) -> Schema {
@@ -193,33 +207,24 @@ pub(crate) mod tests {
             name: name.to_string(),
             version: 1,
             fields: vec![
-                FieldDef {
-                    name: "email".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        pii: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "password".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        credential: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
-                FieldDef {
-                    name: "org_id".to_string(),
-                    field_type: FieldType::String,
-                    annotations: FieldAnnotations {
-                        index: true,
-                        ..Default::default()
-                    },
-                    required: true,
-                },
+                FieldDef::with_kind(
+                    "email",
+                    FieldType::String,
+                    FieldKind::Pii(PiiPolicy { searchable: false }),
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "password",
+                    FieldType::String,
+                    legacy_credential_kind(),
+                    true,
+                ),
+                FieldDef::with_kind(
+                    "org_id",
+                    FieldType::String,
+                    FieldKind::Index { claim: None },
+                    true,
+                ),
             ],
         }
     }
@@ -238,7 +243,7 @@ pub(crate) mod tests {
         let retrieved = registry.get("myapp").await.unwrap();
         assert_eq!(retrieved.name, "myapp");
         assert_eq!(retrieved.fields.len(), 3);
-        assert!(retrieved.fields[1].annotations.credential);
+        assert!(retrieved.fields[1].kind.is_credential());
     }
 
     #[tokio::test]
@@ -324,15 +329,12 @@ pub(crate) mod tests {
 
         registry.register(test_schema("myapp")).await.unwrap();
 
-        let new_field = FieldDef {
-            name: "phone".to_string(),
-            field_type: FieldType::String,
-            annotations: FieldAnnotations {
-                pii: true,
-                ..Default::default()
-            },
-            required: true, // will be forced to false by alter()
-        };
+        let new_field = FieldDef::with_kind(
+            "phone",
+            FieldType::String,
+            FieldKind::Pii(PiiPolicy { searchable: false }),
+            true, // will be forced to false by alter()
+        );
 
         let schema = registry
             .alter("myapp", vec![new_field], vec![])
@@ -371,12 +373,12 @@ pub(crate) mod tests {
 
         registry.register(test_schema("myapp")).await.unwrap();
 
-        let dup_field = FieldDef {
-            name: "email".to_string(),
-            field_type: FieldType::String,
-            annotations: FieldAnnotations::default(),
-            required: true,
-        };
+        let dup_field = FieldDef::with_kind(
+            "email",
+            FieldType::String,
+            FieldKind::Inert { claim: None },
+            true,
+        );
 
         let err = registry
             .alter("myapp", vec![dup_field], vec![])
@@ -408,12 +410,12 @@ pub(crate) mod tests {
 
         registry.register(test_schema("myapp")).await.unwrap();
 
-        let new_field = FieldDef {
-            name: "phone".to_string(),
-            field_type: FieldType::String,
-            annotations: FieldAnnotations::default(),
-            required: false,
-        };
+        let new_field = FieldDef::with_kind(
+            "phone",
+            FieldType::String,
+            FieldKind::Inert { claim: None },
+            false,
+        );
 
         registry
             .alter("myapp", vec![new_field], vec![])

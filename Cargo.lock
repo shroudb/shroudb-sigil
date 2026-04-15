@@ -2293,9 +2293,15 @@ version = "1.9.2"
 dependencies = [
  "anyhow",
  "clap",
+ "serde",
  "serde_json",
  "shroudb-sigil-client",
+ "shroudb-sigil-core",
+ "shroudb-storage",
+ "shroudb-store",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -1,3 +1,8 @@
+mod migrate;
+mod migrate_store;
+
+use std::path::PathBuf;
+
 use anyhow::Context;
 use clap::Parser;
 use shroudb_sigil_client::SigilClient;
@@ -19,6 +24,11 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // Offline commands that bypass the server (run against the store dir).
+    if let Some(subcommand) = offline_subcommand(&cli.command) {
+        return run_offline(subcommand).await;
+    }
+
     let mut client = SigilClient::connect(&cli.addr)
         .await
         .with_context(|| format!("failed to connect to {}", cli.addr))?;
@@ -30,6 +40,78 @@ async fn main() -> anyhow::Result<()> {
         // Single command mode
         let args: Vec<&str> = cli.command.iter().map(|s| s.as_str()).collect();
         execute(&mut client, &args).await
+    }
+}
+
+/// An offline command that operates directly on the store, bypassing the
+/// Sigil server. Currently: `SCHEMA MIGRATE`.
+enum OfflineSubcommand {
+    SchemaMigrate { store_dir: PathBuf, dry_run: bool },
+}
+
+fn offline_subcommand(command: &[String]) -> Option<OfflineSubcommand> {
+    if command.len() < 2 {
+        return None;
+    }
+    if !command[0].eq_ignore_ascii_case("SCHEMA") {
+        return None;
+    }
+    if !command[1].eq_ignore_ascii_case("MIGRATE") {
+        return None;
+    }
+
+    let mut store_dir: Option<PathBuf> = None;
+    let mut dry_run = false;
+    let mut iter = command[2..].iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--store" => {
+                store_dir = iter.next().map(PathBuf::from);
+            }
+            "--dry-run" => dry_run = true,
+            _ => {}
+        }
+    }
+
+    let store_dir = store_dir?;
+    Some(OfflineSubcommand::SchemaMigrate { store_dir, dry_run })
+}
+
+async fn run_offline(cmd: OfflineSubcommand) -> anyhow::Result<()> {
+    // Initialize logging once here — the offline migrate path wants to
+    // surface progress via `tracing::info!`, and the network commands rely
+    // on server-side logs.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .try_init();
+
+    match cmd {
+        OfflineSubcommand::SchemaMigrate { store_dir, dry_run } => {
+            eprintln!(
+                "Running SCHEMA MIGRATE against store at {} (dry_run={dry_run})",
+                store_dir.display()
+            );
+            eprintln!("The Sigil server must be stopped for this to be safe.");
+            let report = migrate_store::run_migration(&store_dir, dry_run).await?;
+            eprintln!();
+            eprintln!("Migration report:");
+            eprintln!("  migrated:   {}", report.migrated);
+            eprintln!("  already v2: {}", report.already_v2);
+            eprintln!("  errors:     {}", report.errors.len());
+            for err in &report.errors {
+                eprintln!("    - {}: {}", err.schema_name, err.message);
+            }
+            if !report.errors.is_empty() {
+                anyhow::bail!(
+                    "{} schema(s) failed to migrate — see log above",
+                    report.errors.len()
+                );
+            }
+            Ok(())
+        }
     }
 }
 
