@@ -4,6 +4,26 @@ All notable changes to ShrouDB Sigil are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v1.9.2] - 2026-04-15
+
+### Added
+
+- `lockout` field annotation on `FieldAnnotations` (default `true`): per-credential-field opt-out for failed-attempt lockout. Set `lockout: false` on machine-auth schemas (API keys, service tokens) where lockout is a denial-of-service vector — an attacker who learns a tenant's `entity_id` could otherwise lock that tenant out of production by hammering bad secrets. Schema-level validation rejects `lockout: false` on non-credential fields.
+- `Schema::field_lockout(name)` resolver returns the effective lockout flag for a named field.
+- New tests covering `lockout: false` (no lock after many failed attempts) and switching the flag to bypass an existing `locked_until` state.
+
+### Changed
+
+- `CredentialManager::verify` and `CredentialManager::change_credential` now take an `enforce_lockout: bool` parameter, resolved per-call from the schema's credential field annotation.
+- When `lockout: false`, failed attempts are not counted, `locked_until` is never set, and `ACCOUNT_LOCKED` is never returned for that field — verify returns `VERIFICATION_FAILED` instead.
+- `protocol.toml` adds `lockout` to `FieldAnnotations`; `ACCOUNT_LOCKED` description clarifies it only fires on credential fields with the default `lockout: true`.
+- Server-side `SchemaFieldConfig` mirrors the new annotation.
+- Documentation: `README.md`, `DOCS.md`, `ABOUT.md` cover the human-auth vs. machine-auth guidance with an `api_keys` schema example.
+
+### Security
+
+- Bumped `rustls-webpki` 0.103.11 → 0.103.12 to clear RUSTSEC-2026-0098 and RUSTSEC-2026-0099 (name-constraint handling for URI and wildcard names).
+
 ## [v1.9.0] - 2026-04-11
 
 ### Added
