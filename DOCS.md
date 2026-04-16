@@ -14,7 +14,7 @@ mode = "embedded"          # "embedded" or "remote"
 data_dir = "./sigil-data"  # embedded mode
 # uri = "shroudb+tls://token@host:6399"  # remote mode
 
-[auth]
+[jwt]
 access_ttl = "15m"
 refresh_ttl = "30d"
 jwt_algorithm = "ES256"    # ES256, ES384, RS256, RS384, RS512, EdDSA
@@ -312,7 +312,7 @@ ENVELOPE LOOKUP myapp email alice@example.com
 USER LOOKUP myapp email alice@example.com
 ```
 
-Returns the matching envelope record.
+Returns the `entity_id` of the matching envelope. Follow up with `ENVELOPE GET` / `USER GET` if you need the full record.
 
 ## Authentication
 
@@ -602,4 +602,4 @@ let jwks = client.jwks("myapp").await?;
 Response types:
 
 - `TokenPair` — `access_token: String`, `refresh_token: String`, `expires_in: u64`
-- `UserRecord` — `user_id: String`, `fields: serde_json::Value`, `created_at: Option<u64>`, `updated_at: Option<u64>`
+- `EnvelopeRecord` — `entity_id: String`, `fields: serde_json::Value`, `created_at: Option<u64>`, `updated_at: Option<u64>` (also re-exported as `UserRecord` for the `USER` sugar methods)
