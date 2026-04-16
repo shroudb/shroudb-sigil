@@ -87,7 +87,7 @@ parameters = [
     { name = "name", type = "string", required = true, description = "Schema name (used as namespace prefix)" },
     { name = "json", type = "json", required = true, description = "Schema definition: fields with type and kind" },
 ]
-response = { version = "integer" }
+response = { status = "string", version = "integer" }
 http = { method = "POST", path = "/sigil/schemas", request_body = "Schema" }
 
 [commands.SCHEMA_GET]
@@ -96,14 +96,14 @@ description = "Get a schema definition by name"
 parameters = [
     { name = "name", type = "string", required = true },
 ]
-response = { schema = "Schema" }
+response = "Schema"
 http = { method = "GET", path = "/sigil/schemas/{name}" }
 
 [commands.SCHEMA_LIST]
 syntax = "SCHEMA LIST"
 description = "List all registered schema names"
 parameters = []
-response = { names = "array<string>" }
+response = "array<string>"
 
 [commands.SCHEMA_ALTER]
 syntax = "SCHEMA ALTER <name> ADD <field_json> | SCHEMA ALTER <name> REMOVE <field_name>"
@@ -114,7 +114,7 @@ parameters = [
     { name = "field_json", type = "json", required = false, description = "FieldDef JSON (for ADD)" },
     { name = "field_name", type = "string", required = false, description = "Field name to remove (for REMOVE)" },
 ]
-response = { name = "string", version = "integer", fields = "integer" }
+response = { status = "string", name = "string", version = "integer", fields = "integer" }
 http = { method = "PATCH", path = "/sigil/schemas/{name}" }
 
 # ── Envelope (generic) ───────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ parameters = [
     { name = "id", type = "string", required = true, description = "Entity ID" },
     { name = "json", type = "json", required = true, description = "Field name-value pairs" },
 ]
-response = { id = "string", fields = "map", created_at = "integer" }
+response = { status = "string", entity_id = "string", fields = "map", created_at = "integer" }
 http = { method = "POST", path = "/sigil/{schema}/envelopes", request_body = "CreateEnvelopeBody" }
 
 [commands.ENVELOPE_GET]
@@ -137,7 +137,7 @@ parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true },
 ]
-response = { id = "string", fields = "map", created_at = "integer", updated_at = "integer" }
+response = { entity_id = "string", fields = "map", created_at = "integer", updated_at = "integer" }
 http = { method = "GET", path = "/sigil/{schema}/envelopes/{id}" }
 
 [commands.ENVELOPE_IMPORT]
@@ -148,7 +148,7 @@ parameters = [
     { name = "id", type = "string", required = true, description = "Entity ID" },
     { name = "json", type = "json", required = true, description = "Field name-value pairs (credential values are hashes, not plaintext)" },
 ]
-response = { id = "string", fields = "map", created_at = "integer" }
+response = { status = "string", entity_id = "string", fields = "map", created_at = "integer" }
 http = { method = "POST", path = "/sigil/{schema}/envelopes/import", request_body = "CreateEnvelopeBody" }
 
 [commands.ENVELOPE_UPDATE]
@@ -159,7 +159,7 @@ parameters = [
     { name = "id", type = "string", required = true },
     { name = "json", type = "json", required = true, description = "Field name-value pairs to update" },
 ]
-response = { id = "string", fields = "map", updated_at = "integer" }
+response = { status = "string", entity_id = "string", fields = "map", updated_at = "integer" }
 http = { method = "PATCH", path = "/sigil/{schema}/envelopes/{id}", request_body = "UpdateEnvelopeBody" }
 
 [commands.ENVELOPE_DELETE]
@@ -181,18 +181,18 @@ parameters = [
     { name = "field", type = "string", required = true, description = "Name of the credential field to verify" },
     { name = "value", type = "string", required = true, description = "Plaintext value to verify against" },
 ]
-response = { valid = "boolean" }
+response = { status = "string", valid = "boolean" }
 http = { method = "POST", path = "/sigil/{schema}/envelopes/verify", request_body = "EnvelopeVerifyBody" }
 
 [commands.ENVELOPE_LOOKUP]
 syntax = "ENVELOPE LOOKUP <schema> <field> <value>"
-description = "Look up an envelope by indexed or searchable field value"
+description = "Look up an envelope by indexed or searchable field value. Returns the matched entity ID only."
 parameters = [
     { name = "schema", type = "string", required = true },
     { name = "field", type = "string", required = true, description = "Name of the indexed/searchable field" },
     { name = "value", type = "string", required = true, description = "Value to search for" },
 ]
-response = { id = "string", fields = "map", created_at = "integer", updated_at = "integer" }
+response = { status = "string", entity_id = "string" }
 http = { method = "POST", path = "/sigil/{schema}/envelopes/lookup", request_body = "EnvelopeLookupBody" }
 
 # ── Credential (generic) ─────────────────────────────────────────────────────
@@ -232,7 +232,7 @@ parameters = [
     { name = "hash", type = "string", required = true, description = "PHC string or bcrypt format" },
     { name = "meta", type = "json", required = false },
 ]
-response = { algorithm = "string" }
+response = { status = "string", algorithm = "string" }
 http = { method = "POST", path = "/sigil/{schema}/credentials/import", request_body = "CredentialImportBody" }
 
 # ── User (sugar — infers credential field from schema) ───────────────────────
@@ -245,7 +245,7 @@ parameters = [
     { name = "id", type = "string", required = true, description = "User ID" },
     { name = "json", type = "json", required = true, description = "Field name-value pairs" },
 ]
-response = { user_id = "string", fields = "map", created_at = "integer" }
+response = { status = "string", entity_id = "string", fields = "map", created_at = "integer" }
 http = { method = "POST", path = "/sigil/{schema}/users", request_body = "CreateUserBody" }
 
 [commands.USER_GET]
@@ -255,7 +255,7 @@ parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true },
 ]
-response = { user_id = "string", fields = "map", created_at = "integer", updated_at = "integer" }
+response = { entity_id = "string", fields = "map", created_at = "integer", updated_at = "integer" }
 http = { method = "GET", path = "/sigil/{schema}/users/{id}" }
 
 [commands.USER_IMPORT]
@@ -266,7 +266,7 @@ parameters = [
     { name = "id", type = "string", required = true, description = "User ID" },
     { name = "json", type = "json", required = true, description = "Field name-value pairs (credential values are hashes, not plaintext)" },
 ]
-response = { user_id = "string", fields = "map", created_at = "integer" }
+response = { status = "string", entity_id = "string", fields = "map", created_at = "integer" }
 http = { method = "POST", path = "/sigil/{schema}/users/import", request_body = "CreateUserBody" }
 
 [commands.USER_UPDATE]
@@ -277,7 +277,7 @@ parameters = [
     { name = "id", type = "string", required = true },
     { name = "json", type = "json", required = true, description = "Field name-value pairs to update" },
 ]
-response = { user_id = "string", fields = "map", updated_at = "integer" }
+response = { status = "string", entity_id = "string", fields = "map", updated_at = "integer" }
 http = { method = "PATCH", path = "/sigil/{schema}/users/{id}", request_body = "UpdateUserBody" }
 
 [commands.USER_DELETE]
@@ -298,8 +298,19 @@ parameters = [
     { name = "id", type = "string", required = true },
     { name = "password", type = "string", required = true },
 ]
-response = { valid = "boolean" }
+response = { status = "string", valid = "boolean" }
 http = { method = "POST", path = "/sigil/{schema}/verify", request_body = "VerifyBody" }
+
+[commands.USER_LOOKUP]
+syntax = "USER LOOKUP <schema> <field> <value>"
+description = "Sugar: look up by indexed or searchable field value. Equivalent to ENVELOPE LOOKUP."
+parameters = [
+    { name = "schema", type = "string", required = true },
+    { name = "field", type = "string", required = true, description = "Name of the indexed/searchable field" },
+    { name = "value", type = "string", required = true, description = "Value to search for" },
+]
+response = { status = "string", entity_id = "string" }
+http = { method = "POST", path = "/sigil/{schema}/lookup", request_body = "LookupBody" }
 
 # ── Session ───────────────────────────────────────────────────────────────────
 
@@ -312,8 +323,21 @@ parameters = [
     { name = "password", type = "string", required = true },
     { name = "meta", type = "json", required = false, description = "Extra claims to merge into access token" },
 ]
-response = { access_token = "string", refresh_token = "string", expires_in = "integer" }
+response = { status = "string", access_token = "string", refresh_token = "string", expires_in = "integer" }
 http = { method = "POST", path = "/sigil/{schema}/sessions", request_body = "LoginBody" }
+
+[commands.SESSION_LOGIN]
+syntax = "SESSION LOGIN <schema> <field> <value> <password> [META <json>]"
+description = "Verify credentials by indexed field value (e.g., email) and issue access + refresh tokens. Same claim enrichment as SESSION CREATE."
+parameters = [
+    { name = "schema", type = "string", required = true },
+    { name = "field", type = "string", required = true, description = "Name of the indexed field to look up" },
+    { name = "value", type = "string", required = true, description = "Indexed field value" },
+    { name = "password", type = "string", required = true },
+    { name = "meta", type = "json", required = false, description = "Extra claims to merge into access token" },
+]
+response = { status = "string", access_token = "string", refresh_token = "string", expires_in = "integer" }
+http = { method = "POST", path = "/sigil/{schema}/sessions/login", request_body = "FieldLoginBody" }
 
 [commands.SESSION_REFRESH]
 syntax = "SESSION REFRESH <schema> <token>"
@@ -322,7 +346,7 @@ parameters = [
     { name = "schema", type = "string", required = true },
     { name = "token", type = "string", required = true, description = "Current refresh token" },
 ]
-response = { access_token = "string", refresh_token = "string", expires_in = "integer" }
+response = { status = "string", access_token = "string", refresh_token = "string", expires_in = "integer" }
 http = { method = "POST", path = "/sigil/{schema}/sessions/refresh", request_body = "RefreshBody" }
 
 [commands.SESSION_REVOKE]
@@ -342,7 +366,7 @@ parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true, description = "Entity ID" },
 ]
-response = { revoked = "integer" }
+response = { status = "string", revoked = "integer" }
 http = { method = "DELETE", path = "/sigil/{schema}/sessions", request_body = "RevokeBody (entity_id)" }
 
 [commands.SESSION_LIST]
@@ -352,8 +376,8 @@ parameters = [
     { name = "schema", type = "string", required = true },
     { name = "id", type = "string", required = true, description = "Entity ID" },
 ]
-response = { sessions = "array<SessionRecord>" }
-http = { method = "GET", path = "/sigil/{schema}/sessions/{id}" }
+response = "array<SessionRecord>"
+http = { method = "GET", path = "/sigil/{schema}/sessions/{entity_id}" }
 
 # ── Password (sugar — infers credential field from schema) ───────────────────
 
@@ -389,7 +413,7 @@ parameters = [
     { name = "hash", type = "string", required = true, description = "PHC string or bcrypt format" },
     { name = "meta", type = "json", required = false },
 ]
-response = { algorithm = "string" }
+response = { status = "string", algorithm = "string" }
 http = { method = "POST", path = "/sigil/{schema}/password/import", request_body = "ImportPasswordBody" }
 
 # ── JWT ───────────────────────────────────────────────────────────────────────
@@ -400,10 +424,18 @@ description = "Get the JSON Web Key Set for external token verification"
 parameters = [
     { name = "schema", type = "string", required = true },
 ]
-response = { keys = "array<JWK>" }
+response = "JWKS"
 http = { method = "GET", path = "/sigil/{schema}/.well-known/jwks.json" }
 
 # ── Operational ───────────────────────────────────────────────────────────────
+
+[commands.AUTH]
+syntax = "AUTH <token>"
+description = "Authenticate the current TCP connection with a bearer token. Handled at the connection layer, not dispatched to the engine. HTTP transport uses the Authorization: Bearer header instead."
+parameters = [
+    { name = "token", type = "string", required = true, description = "Bearer token validated by the configured TokenValidator" },
+]
+response = { status = "string" }
 
 [commands.HEALTH]
 syntax = "HEALTH"
@@ -512,4 +544,10 @@ fields = [
     { name = "generation", type = "integer" },
     { name = "created_at", type = "integer" },
     { name = "expires_at", type = "integer" },
+]
+
+[types.JWKS]
+description = "JSON Web Key Set returned by the JWKS command. Shape follows RFC 7517."
+fields = [
+    { name = "keys", type = "array<JWK>", description = "Public keys (active + draining) for external JWT verification." },
 ]
