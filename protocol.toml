@@ -444,6 +444,13 @@ parameters = []
 response = { status = "string" }
 http = { method = "GET", path = "/sigil/health" }
 
+[commands.PING]
+syntax = "PING"
+description = "Ping-pong connectivity test"
+parameters = []
+response = { status = "string" }
+http = { method = "GET", path = "/sigil/ping" }
+
 # ─── Types ────────────────────────────────────────────────────────────────────
 
 [types.Schema]

@@ -437,6 +437,10 @@ pub async fn dispatch<S: Store>(
         SigilCommand::Health => SigilResponse::ok(serde_json::json!({
             "status": "ok",
         })),
+
+        SigilCommand::Ping => SigilResponse::ok(serde_json::json!({
+            "status": "pong",
+        })),
     }
 }
 

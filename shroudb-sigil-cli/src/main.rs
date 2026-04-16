@@ -125,6 +125,10 @@ async fn execute(client: &mut SigilClient, args: &[&str]) -> anyhow::Result<()> 
             client.health().await.context("health check failed")?;
             println!("OK");
         }
+        "PING" => {
+            client.ping().await.context("ping failed")?;
+            println!("PONG");
+        }
         "SCHEMA" if args.len() >= 2 => match args[1].to_uppercase().as_str() {
             "REGISTER" if args.len() >= 4 => {
                 let def: serde_json::Value =

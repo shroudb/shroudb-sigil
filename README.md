@@ -139,6 +139,7 @@ PASSWORD IMPORT <schema> <id> <hash> [META <json>]
 JWKS <schema>
 AUTH <token>
 HEALTH
+PING
 ```
 
 ## Configuration

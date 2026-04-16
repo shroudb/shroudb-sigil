@@ -4,6 +4,12 @@ All notable changes to ShrouDB Sigil are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.1.0] - 2026-04-16
+
+### Added
+
+- `PING` meta-command (RESP3 + HTTP `GET /sigil/ping`). Sigil was the only engine missing PING across the ShrouDB fleet; this restores uniform meta-command coverage alongside `AUTH` and `HEALTH`. Client SDKs gain a `ping()` helper; the CLI accepts `PING` and prints `PONG`.
+
 ## [v2.0.0] - 2026-04-15
 
 ### Added

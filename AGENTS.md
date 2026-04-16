@@ -83,6 +83,7 @@ shroudb-sigil-cli/       # CLI tool
 |---------|------|---------|-------------|
 | `AUTH` | `<token>` | `{status}` | Authenticate connection |
 | `HEALTH` | -- | `{status}` | Health check |
+| `PING` | -- | `{status}` | Ping-pong connectivity test |
 
 ### Per-Field Blind Mode
 

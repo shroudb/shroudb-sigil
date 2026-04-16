@@ -26,7 +26,7 @@ Sigil is the credential envelope engine — a field-level crypto router. Develop
 - **Session:** CREATE, CREATE-BY-FIELD, REFRESH, REVOKE, REVOKE ALL, LIST
 - **Credential (generic, explicit field):** CHANGE, RESET, IMPORT
 - **Password (sugar):** CHANGE, RESET, IMPORT
-- **JWT/Ops:** JWKS, HEALTH, AUTH
+- **JWT/Ops:** JWKS, HEALTH, PING, AUTH
 
 **HTTP REST API (Axum :6500)** — 20+ routes under `/sigil/`:
 - Rate-limited: user create/import, verify, lookup, session create/login, password change/reset/import

@@ -86,6 +86,12 @@ impl SigilClient {
         check_status(&resp)
     }
 
+    /// Ping the server.
+    pub async fn ping(&mut self) -> Result<(), ClientError> {
+        let resp = self.meta_command(&["PING"]).await?;
+        check_status(&resp)
+    }
+
     // ── Schema ──────────────────────────────────────────────────────
 
     /// Register a credential envelope schema.

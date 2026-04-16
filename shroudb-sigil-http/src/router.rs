@@ -112,6 +112,7 @@ pub fn router<S: Store + 'static>(
         )
         .route("/sigil/{schema}/.well-known/jwks.json", get(jwks::<S>))
         .route("/sigil/health", get(health))
+        .route("/sigil/ping", get(ping))
         .with_state(state);
 
     Router::new()
@@ -619,4 +620,8 @@ async fn jwks<S: Store + 'static>(
 
 async fn health() -> Response {
     (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
+}
+
+async fn ping() -> Response {
+    (StatusCode::OK, Json(serde_json::json!({"status": "pong"}))).into_response()
 }

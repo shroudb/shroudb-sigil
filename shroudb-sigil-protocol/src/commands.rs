@@ -175,6 +175,7 @@ pub enum SigilCommand {
 
     // Operational
     Health,
+    Ping,
 }
 
 impl SigilCommand {
@@ -183,7 +184,9 @@ impl SigilCommand {
     pub fn acl_requirement(&self) -> AclRequirement {
         match self {
             // Pre-auth / public
-            SigilCommand::Auth { .. } | SigilCommand::Health => AclRequirement::None,
+            SigilCommand::Auth { .. } | SigilCommand::Health | SigilCommand::Ping => {
+                AclRequirement::None
+            }
 
             // Public: JWKS is for external token verification
             SigilCommand::Jwks { .. } => AclRequirement::None,
@@ -263,6 +266,7 @@ pub fn parse_command(args: &[&str]) -> Result<SigilCommand, String> {
         "PASSWORD" => parse_password(args),
         "JWKS" => parse_jwks(args),
         "HEALTH" => Ok(SigilCommand::Health),
+        "PING" => Ok(SigilCommand::Ping),
         _ => Err(format!("unknown command: {}", args[0])),
     }
 }
@@ -809,6 +813,12 @@ mod tests {
     fn parse_health() {
         let cmd = parse_command(&["HEALTH"]).unwrap();
         assert!(matches!(cmd, SigilCommand::Health));
+    }
+
+    #[test]
+    fn parse_ping() {
+        let cmd = parse_command(&["PING"]).unwrap();
+        assert!(matches!(cmd, SigilCommand::Ping));
     }
 
     #[test]
