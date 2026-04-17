@@ -1,9 +1,48 @@
 use shroudb_acl::AuthContext;
+use shroudb_protocol_wire::WIRE_PROTOCOL;
 use shroudb_sigil_engine::engine::SigilEngine;
 use shroudb_store::Store;
 
 use crate::commands::SigilCommand;
 use crate::response::SigilResponse;
+
+const SUPPORTED_COMMANDS: &[&str] = &[
+    "AUTH",
+    "SCHEMA REGISTER",
+    "SCHEMA GET",
+    "SCHEMA LIST",
+    "SCHEMA ALTER",
+    "ENVELOPE CREATE",
+    "ENVELOPE GET",
+    "ENVELOPE IMPORT",
+    "ENVELOPE UPDATE",
+    "ENVELOPE DELETE",
+    "ENVELOPE VERIFY",
+    "ENVELOPE LOOKUP",
+    "USER CREATE",
+    "USER GET",
+    "USER IMPORT",
+    "USER UPDATE",
+    "USER DELETE",
+    "USER VERIFY",
+    "USER LOOKUP",
+    "SESSION CREATE",
+    "SESSION LOGIN",
+    "SESSION REFRESH",
+    "SESSION REVOKE",
+    "SESSION REVOKE ALL",
+    "SESSION LIST",
+    "CREDENTIAL CHANGE",
+    "CREDENTIAL RESET",
+    "CREDENTIAL IMPORT",
+    "PASSWORD CHANGE",
+    "PASSWORD RESET",
+    "PASSWORD IMPORT",
+    "JWKS",
+    "HEALTH",
+    "PING",
+    "HELLO",
+];
 
 /// Dispatch a parsed command to the SigilEngine and produce a response.
 ///
@@ -440,6 +479,14 @@ pub async fn dispatch<S: Store>(
 
         SigilCommand::Ping => SigilResponse::ok(serde_json::json!({
             "status": "pong",
+        })),
+
+        SigilCommand::Hello => SigilResponse::ok(serde_json::json!({
+            "engine": "sigil",
+            "version": env!("CARGO_PKG_VERSION"),
+            "protocol": WIRE_PROTOCOL,
+            "commands": SUPPORTED_COMMANDS,
+            "capabilities": Vec::<&str>::new(),
         })),
     }
 }

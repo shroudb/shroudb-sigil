@@ -451,6 +451,12 @@ parameters = []
 response = { status = "string" }
 http = { method = "GET", path = "/sigil/ping" }
 
+[commands.HELLO]
+syntax = "HELLO"
+description = "Engine identity handshake — returns engine name, version, wire protocol, supported commands, and capability tags. Pre-auth; clients issue this on connect to verify they are talking to the expected engine and version."
+parameters = []
+response = { engine = "string", version = "string", protocol = "string", commands = "array<string>", capabilities = "array<string>" }
+
 # ─── Types ────────────────────────────────────────────────────────────────────
 
 [types.Schema]

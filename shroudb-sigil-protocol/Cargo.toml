@@ -12,6 +12,7 @@ shroudb-sigil-core.workspace = true
 shroudb-sigil-engine.workspace = true
 shroudb-acl.workspace = true
 shroudb-store.workspace = true
+shroudb-protocol-wire.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true

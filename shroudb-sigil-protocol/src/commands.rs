@@ -176,6 +176,11 @@ pub enum SigilCommand {
     // Operational
     Health,
     Ping,
+    /// Engine identity handshake. Pre-auth; returns engine name, version,
+    /// wire protocol, supported commands, and capability tags so a client
+    /// can detect SDK/engine version mismatches before issuing any real
+    /// command.
+    Hello,
 }
 
 impl SigilCommand {
@@ -184,9 +189,10 @@ impl SigilCommand {
     pub fn acl_requirement(&self) -> AclRequirement {
         match self {
             // Pre-auth / public
-            SigilCommand::Auth { .. } | SigilCommand::Health | SigilCommand::Ping => {
-                AclRequirement::None
-            }
+            SigilCommand::Auth { .. }
+            | SigilCommand::Health
+            | SigilCommand::Ping
+            | SigilCommand::Hello => AclRequirement::None,
 
             // Public: JWKS is for external token verification
             SigilCommand::Jwks { .. } => AclRequirement::None,
@@ -267,6 +273,7 @@ pub fn parse_command(args: &[&str]) -> Result<SigilCommand, String> {
         "JWKS" => parse_jwks(args),
         "HEALTH" => Ok(SigilCommand::Health),
         "PING" => Ok(SigilCommand::Ping),
+        "HELLO" => Ok(SigilCommand::Hello),
         _ => Err(format!("unknown command: {}", args[0])),
     }
 }
@@ -819,6 +826,12 @@ mod tests {
     fn parse_ping() {
         let cmd = parse_command(&["PING"]).unwrap();
         assert!(matches!(cmd, SigilCommand::Ping));
+    }
+
+    #[test]
+    fn parse_hello() {
+        let cmd = parse_command(&["HELLO"]).unwrap();
+        assert!(matches!(cmd, SigilCommand::Hello));
     }
 
     #[test]
