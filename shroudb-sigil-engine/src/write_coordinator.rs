@@ -268,10 +268,15 @@ impl<S: Store> WriteCoordinator<S> {
         import_mode: bool,
     ) -> Result<EnvelopeRecord, SigilError> {
         let started_at = std::time::Instant::now();
+        let resource = format!("{}/{}", schema.name, entity_id);
+
         // Validate all required fields are present (optional fields can be omitted)
         for field_def in &schema.fields {
             if field_def.required && !fields.contains_key(&field_def.name) {
-                return Err(SigilError::MissingField(field_def.name.clone()));
+                let err = SigilError::MissingField(field_def.name.clone());
+                self.emit_failure_audit(caller, "create", &resource, entity_id, started_at, &err)
+                    .await;
+                return Err(err);
             }
         }
 
@@ -283,11 +288,20 @@ impl<S: Store> WriteCoordinator<S> {
             .await
             .is_ok()
         {
-            return Err(SigilError::EntityExists);
+            let err = SigilError::EntityExists;
+            self.emit_failure_audit(caller, "create", &resource, entity_id, started_at, &err)
+                .await;
+            return Err(err);
         }
 
-        self.check_policy(caller, entity_id, &schema.name, "create")
-            .await?;
+        if let Err(e) = self
+            .check_policy(caller, entity_id, &schema.name, "create")
+            .await
+        {
+            self.emit_failure_audit(caller, "create", &resource, entity_id, started_at, &e)
+                .await;
+            return Err(e);
+        }
 
         let mut completed_ops: Vec<CompensatingOp> = Vec::new();
         let mut record_fields: HashMap<String, serde_json::Value> = HashMap::new();
@@ -316,23 +330,27 @@ impl<S: Store> WriteCoordinator<S> {
                     }
                 }
                 Err(e) => {
-                    return Err(self.rollback_and_fail(completed_ops, e).await);
+                    let err = self.rollback_and_fail(completed_ops, e).await;
+                    self.emit_failure_audit(
+                        caller, "create", &resource, entity_id, started_at, &err,
+                    )
+                    .await;
+                    return Err(err);
                 }
             }
         }
 
         // Audit event before commit — fail closed if Chronicle is unreachable
         if let Err(e) = self
-            .emit_audit_event(
-                caller,
-                "create",
-                &format!("{}/{}", schema.name, entity_id),
-                entity_id,
-                started_at,
-            )
+            .emit_audit_event(caller, "create", &resource, entity_id, started_at)
             .await
         {
-            return Err(self.rollback_and_fail(completed_ops, e).await);
+            let err = self.rollback_and_fail(completed_ops, e).await;
+            // Best-effort: if the audit emit already failed, a second attempt
+            // via emit_failure_audit may also fail — swallow that silently.
+            self.emit_failure_audit(caller, "create", &resource, entity_id, started_at, &err)
+                .await;
+            return Err(err);
         }
 
         // Write the envelope record — the "commit point"
@@ -354,10 +372,64 @@ impl<S: Store> WriteCoordinator<S> {
             .await
         {
             let cause = SigilError::Store(e.to_string());
-            return Err(self.rollback_and_fail(completed_ops, cause).await);
+            let err = self.rollback_and_fail(completed_ops, cause).await;
+            self.emit_failure_audit(caller, "create", &resource, entity_id, started_at, &err)
+                .await;
+            return Err(err);
         }
 
         Ok(record)
+    }
+
+    /// Emit an audit event for a failure path. Adds the error type to
+    /// `metadata["error"]` so Chronicle can filter by failure kind. Swallows
+    /// chronicle errors: the operation has already failed; a secondary
+    /// chronicle failure should not mask the original cause.
+    pub(crate) async fn emit_failure_audit(
+        &self,
+        caller: &CallerContext,
+        operation: &str,
+        resource: &str,
+        target: &str,
+        started_at: std::time::Instant,
+        err: &SigilError,
+    ) {
+        let Some(chronicle) = self.capabilities.chronicle.as_ref() else {
+            return;
+        };
+        let mut metadata: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        if !target.is_empty() {
+            metadata.insert("target".to_string(), target.to_string());
+        }
+        metadata.insert("error".to_string(), err.to_string());
+        let elapsed = started_at.elapsed();
+        let duration_ms = std::cmp::max(1, elapsed.as_millis().min(u64::MAX as u128) as u64);
+        let event = shroudb_chronicle_core::event::Event {
+            id: uuid::Uuid::new_v4().to_string(),
+            correlation_id: None,
+            timestamp: now_secs() * 1000,
+            engine: shroudb_chronicle_core::event::Engine::Sigil,
+            operation: operation.to_string(),
+            resource_type: "schema".to_string(),
+            resource_id: resource.to_string(),
+            result: shroudb_chronicle_core::event::EventResult::Error,
+            duration_ms,
+            actor: caller.actor.clone(),
+            tenant_id: caller.tenant_opt(),
+            diff: None,
+            metadata,
+            hash: None,
+            previous_hash: None,
+        };
+        if let Err(e) = chronicle.record(event).await {
+            tracing::warn!(
+                error = %e,
+                operation = operation,
+                resource = resource,
+                "chronicle record failed on failure-audit path",
+            );
+        }
     }
 
     /// Look up an entity_id by searching a field value via Veil blind index.
