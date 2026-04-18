@@ -24,12 +24,12 @@ pub struct SigilServerConfig {
     pub keep: Option<KeepConfig>,
     #[serde(default)]
     pub schemas: Vec<SchemaConfig>,
-    /// Audit (Chronicle) capability slot. Absent = fail-closed at startup.
+    /// Chronicle (audit) capability slot. Absent = fail-closed at startup.
     #[serde(default)]
-    pub audit: Option<AuditConfig>,
-    /// Policy (Sentry) capability slot. Same contract.
+    pub chronicle: Option<AuditConfig>,
+    /// Sentry (policy) capability slot. Same contract.
     #[serde(default)]
-    pub policy: Option<PolicyConfig>,
+    pub sentry: Option<PolicyConfig>,
 }
 
 /// Schema definition in config — registered at startup if not already present.
@@ -640,7 +640,6 @@ auth_token = "test"
         let cfg: SigilServerConfig = toml::from_str(toml)
             .expect("DEBT-F1: config must accept [sentry] and [chronicle] sections");
 
-        // Access the fields — will not compile until both are declared.
         let sentry_addr = format!("{:?}", cfg_sentry_addr(&cfg));
         let chronicle_addr = format!("{:?}", cfg_chronicle_addr(&cfg));
         assert!(
@@ -653,14 +652,10 @@ auth_token = "test"
         );
     }
 
-    /// Helper shims — these deliberately fail the debt test by returning
-    /// empty strings because the fields don't exist yet. Once
-    /// `SigilServerConfig::sentry` and `::chronicle` exist, replace these
-    /// with field accesses and the test passes.
-    fn cfg_sentry_addr(_cfg: &SigilServerConfig) -> Option<String> {
-        None
+    fn cfg_sentry_addr(cfg: &SigilServerConfig) -> Option<String> {
+        cfg.sentry.as_ref().and_then(|s| s.addr.clone())
     }
-    fn cfg_chronicle_addr(_cfg: &SigilServerConfig) -> Option<String> {
-        None
+    fn cfg_chronicle_addr(cfg: &SigilServerConfig) -> Option<String> {
+        cfg.chronicle.as_ref().and_then(|c| c.addr.clone())
     }
 }

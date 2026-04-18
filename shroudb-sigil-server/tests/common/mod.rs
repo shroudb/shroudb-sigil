@@ -370,11 +370,11 @@ http_bind = "{http_bind}"
 [store]
 mode = "embedded"
 
-[audit]
+[chronicle]
 mode = "disabled"
 justification = "integration tests: no Chronicle in fixture"
 
-[policy]
+[sentry]
 mode = "disabled"
 justification = "integration tests: no Sentry in fixture"
 "#

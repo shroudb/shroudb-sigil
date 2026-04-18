@@ -19,7 +19,7 @@ Most items below stem from three systemic gaps. Fix these holistically and ~all 
 
 ### Open
 
-- [ ] **DEBT-F1** — `SigilServerConfig` must accept `[sentry]` / `[chronicle]` sections; `main.rs` must wire them into `Capabilities`. Test: `debt_f01_server_config_must_wire_sentry_and_chronicle` @ `shroudb-sigil-server/src/config.rs`.
+- [x] **DEBT-F1** — `SigilServerConfig` must accept `[sentry]` / `[chronicle]` sections; `main.rs` must wire them into `Capabilities`. Test: `debt_f01_server_config_must_wire_sentry_and_chronicle` @ `shroudb-sigil-server/src/config.rs`.
 - [ ] **DEBT-F3** — `PolicyRequest.principal.id` must be the caller's actor, not the target entity. Test: `debt_f03_policy_principal_must_not_equal_target_entity` @ `shroudb-sigil-engine/src/write_coordinator.rs`.
 - [ ] **DEBT-F3b** — `PolicyRequest.principal` must carry roles or claims (ABAC currently blind). Test: `debt_f03b_policy_principal_must_carry_roles_or_claims` @ same file.
 - [ ] **DEBT-F4a** — audit `Event.actor` must be caller's actor, not target entity. Test: `debt_f04a_audit_event_actor_must_not_equal_target_entity` @ same file.

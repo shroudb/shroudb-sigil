@@ -413,33 +413,33 @@ async fn run_server<S: Store + 'static>(
             ),
         };
 
-    // Resolve [audit] and [policy] via engine-bootstrap — no silent None.
-    let audit_cfg = cfg.audit.clone().ok_or_else(|| {
+    // Resolve [chronicle] and [sentry] via engine-bootstrap — no silent None.
+    let chronicle_cfg = cfg.chronicle.clone().ok_or_else(|| {
         anyhow::anyhow!(
-            "missing [audit] config section. Pick one:\n  \
-             [audit] mode = \"remote\" addr = \"chronicle.internal:7300\"\n  \
-             [audit] mode = \"embedded\"\n  \
-             [audit] mode = \"disabled\" justification = \"<reason>\""
+            "missing [chronicle] config section. Pick one:\n  \
+             [chronicle] mode = \"remote\" addr = \"chronicle.internal:7300\"\n  \
+             [chronicle] mode = \"embedded\"\n  \
+             [chronicle] mode = \"disabled\" justification = \"<reason>\""
         )
     })?;
-    let audit_cap = audit_cfg
+    let chronicle_cap = chronicle_cfg
         .resolve(storage.clone())
         .await
-        .context("failed to resolve [audit] capability")?;
-    let policy_cfg = cfg.policy.clone().ok_or_else(|| {
+        .context("failed to resolve [chronicle] capability")?;
+    let sentry_cfg = cfg.sentry.clone().ok_or_else(|| {
         anyhow::anyhow!(
-            "missing [policy] config section. Pick one:\n  \
-             [policy] mode = \"remote\" addr = \"sentry.internal:7100\"\n  \
-             [policy] mode = \"embedded\"\n  \
-             [policy] mode = \"disabled\" justification = \"<reason>\""
+            "missing [sentry] config section. Pick one:\n  \
+             [sentry] mode = \"remote\" addr = \"sentry.internal:7100\"\n  \
+             [sentry] mode = \"embedded\"\n  \
+             [sentry] mode = \"disabled\" justification = \"<reason>\""
         )
     })?;
-    let policy_cap = policy_cfg
-        .resolve(storage.clone(), audit_cap.as_ref().cloned())
+    let sentry_cap = sentry_cfg
+        .resolve(storage.clone(), chronicle_cap.as_ref().cloned())
         .await
-        .context("failed to resolve [policy] capability")?;
+        .context("failed to resolve [sentry] capability")?;
 
-    let capabilities = Capabilities::new(cipher_cap, veil_cap, keep_cap, policy_cap, audit_cap);
+    let capabilities = Capabilities::new(cipher_cap, veil_cap, keep_cap, sentry_cap, chronicle_cap);
 
     let engine = Arc::new(
         SigilEngine::new(store, sigil_config, capabilities)

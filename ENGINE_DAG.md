@@ -71,7 +71,7 @@ Notes:
   `shroudb-server-tcp`, `shroudb-storage`, `shroudb-client`
   (`EmbeddedStore` vs. `RemoteStore`), `shroudb-server-bootstrap` (the
   `Capability<T>` tri-state), `shroudb-engine-bootstrap` (resolving
-  `[audit]` / `[policy]` config sections into Chronicle / Sentry
+  `[chronicle]` / `[sentry]` config sections into Chronicle / Sentry
   capabilities), `shroudb-protocol-wire`, `tokio-rustls`, and — to support
   in-process embedded cipher/veil/keep — `shroudb-cipher-engine` /
   `shroudb-cipher-core`, `shroudb-veil-engine` / `shroudb-veil-core`, and
@@ -179,12 +179,12 @@ connection pools via `deadpool`. In embedded mode it builds a fresh
 to Sigil's `Capabilities`. Embedded engines have their own `policy` and
 `audit` slots `Capability::disabled`'d with a justification that routing
 goes through Sigil's own sentry/chronicle slots, so there is exactly one
-policy and one audit surface in a sigil-server process. `[audit]` and
-`[policy]` are **required top-level sections** resolved through
+policy and one audit surface in a sigil-server process. `[chronicle]` and
+`[sentry]` are **required top-level sections** resolved through
 `shroudb-engine-bootstrap` — they accept
 `mode = "remote" | "embedded" | "disabled"`, and `mode = "disabled"`
 requires an explicit `justification = "<reason>"` string. Missing
-`[audit]` or `[policy]` causes startup to fail-closed with a diagnostic.
+`[chronicle]` or `[sentry]` causes startup to fail-closed with a diagnostic.
 In Moat mode the engine instances are passed in directly. At the engine
 level, each runtime operation either succeeds, gets rejected with
 `CapabilityMissing(...)`, or silently skips a non-blocking control (audit
@@ -334,7 +334,7 @@ Standalone (the `shroudb-sigil` binary in `shroudb-sigil-server`):
   exactly one policy and one audit surface — Sigil's own. Any section
   that is omitted becomes `Capability::DisabledWithJustification` with a
   reason string, which produces the fallback behaviors described above.
-  `[audit]` and `[policy]` are required top-level sections resolved by
+  `[chronicle]` and `[sentry]` are required top-level sections resolved by
   `shroudb-engine-bootstrap`; they accept
   `mode = "remote" | "embedded" | "disabled"` and `disabled` requires an
   explicit `justification`. Missing either section fails startup with a
