@@ -11,11 +11,13 @@ publish.workspace = true
 shroudb-sigil-core.workspace = true
 shroudb-store.workspace = true
 shroudb-acl.workspace = true
+shroudb-audit.workspace = true
 shroudb-chronicle-core.workspace = true
 shroudb-cipher-client.workspace = true
 shroudb-crypto.workspace = true
 shroudb-keep-client.workspace = true
 shroudb-veil-client.workspace = true
+shroudb-server-bootstrap.workspace = true
 
 deadpool.workspace = true
 argon2.workspace = true

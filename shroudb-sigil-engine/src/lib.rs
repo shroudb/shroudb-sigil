@@ -14,3 +14,6 @@ pub mod schema_registry;
 pub mod session;
 pub mod veil_remote;
 pub mod write_coordinator;
+
+#[cfg(test)]
+mod test_support;

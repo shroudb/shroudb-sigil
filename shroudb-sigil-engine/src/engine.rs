@@ -96,7 +96,12 @@ impl<S: Store> SigilEngine<S> {
     // ── Schema operations ───────────────────────────────────────────
 
     pub async fn schema_register(&self, schema: Schema) -> Result<u64, SigilError> {
-        self.schemas.register(schema).await
+        let schema_name = schema.name.clone();
+        let version = self.schemas.register(schema).await?;
+        self.coordinator
+            .emit_audit_event("schema.register", &schema_name, "system")
+            .await?;
+        Ok(version)
     }
 
     pub async fn schema_get(&self, name: &str) -> Result<Schema, SigilError> {
@@ -113,7 +118,11 @@ impl<S: Store> SigilEngine<S> {
         add_fields: Vec<FieldDef>,
         remove_fields: Vec<String>,
     ) -> Result<Schema, SigilError> {
-        self.schemas.alter(name, add_fields, remove_fields).await
+        let schema = self.schemas.alter(name, add_fields, remove_fields).await?;
+        self.coordinator
+            .emit_audit_event("schema.alter", name, "system")
+            .await?;
+        Ok(schema)
     }
 
     // ── Generic envelope operations ─────────────────────────────────
@@ -150,8 +159,16 @@ impl<S: Store> SigilEngine<S> {
     ) -> Result<EnvelopeRecord, SigilError> {
         let schema = self.schemas.get(schema_name).await?;
         self.coordinator
+            .check_policy(entity_id, schema_name, "read")
+            .await?;
+        let record = self
+            .coordinator
             .get_envelope(&schema, entity_id, decrypt)
-            .await
+            .await?;
+        self.coordinator
+            .emit_audit_event("read", &format!("{schema_name}/{entity_id}"), entity_id)
+            .await?;
+        Ok(record)
     }
 
     pub async fn envelope_update(
@@ -185,22 +202,42 @@ impl<S: Store> SigilEngine<S> {
     ) -> Result<bool, SigilError> {
         let schema = self.schemas.get(schema_name).await?;
         let policy = resolve_credential_policy(&schema, field_name)?;
-        self.credentials
+        self.coordinator
+            .check_policy(entity_id, schema_name, "verify")
+            .await?;
+        let ok = self
+            .credentials
             .verify(schema_name, entity_id, field_name, value, &policy)
-            .await
+            .await?;
+        self.coordinator
+            .emit_audit_event(
+                "verify",
+                &format!("{schema_name}/{entity_id}/{field_name}"),
+                entity_id,
+            )
+            .await?;
+        Ok(ok)
     }
 
     /// Look up an entity by a searchable field value via Veil.
     /// Returns the entity_id if found.
     pub async fn envelope_lookup(
         &self,
-        _schema_name: &str,
+        schema_name: &str,
         field_name: &str,
         field_value: &str,
     ) -> Result<String, SigilError> {
         self.coordinator
+            .check_policy("", schema_name, "lookup")
+            .await?;
+        let entity_id = self
+            .coordinator
             .lookup_by_field(field_name, field_value)
-            .await
+            .await?;
+        self.coordinator
+            .emit_audit_event("lookup", &format!("{schema_name}/{field_name}"), &entity_id)
+            .await?;
+        Ok(entity_id)
     }
 
     // ── User sugar (delegates to envelope_*) ────────────────────────
@@ -300,6 +337,9 @@ impl<S: Store> SigilEngine<S> {
         let schema = self.schemas.get(schema_name).await?;
         let cred_field = schema.credential_field_name()?;
         let policy = resolve_credential_policy(&schema, cred_field)?;
+        self.coordinator
+            .check_policy(entity_id, schema_name, "session.create")
+            .await?;
         self.credentials
             .verify(schema_name, entity_id, cred_field, password, &policy)
             .await?;
@@ -308,9 +348,18 @@ impl<S: Store> SigilEngine<S> {
             .build_enriched_claims(&schema, entity_id, extra_claims)
             .await?;
 
-        self.sessions
+        let pair = self
+            .sessions
             .create_session(schema_name, entity_id, merged.as_ref())
-            .await
+            .await?;
+        self.coordinator
+            .emit_audit_event(
+                "session.create",
+                &format!("{schema_name}/{entity_id}"),
+                entity_id,
+            )
+            .await?;
+        Ok(pair)
     }
 
     pub async fn session_refresh(
@@ -321,21 +370,45 @@ impl<S: Store> SigilEngine<S> {
         let schema = self.schemas.get(schema_name).await?;
         let claim_fields = schema.claim_fields();
 
+        let entity_id = self.sessions.peek_entity_id(schema_name, token).await?;
+        self.coordinator
+            .check_policy(&entity_id, schema_name, "session.refresh")
+            .await?;
+
         let enrichment = if !claim_fields.is_empty() {
-            let entity_id = self.sessions.peek_entity_id(schema_name, token).await?;
             self.build_enriched_claims(&schema, &entity_id, None)
                 .await?
         } else {
             None
         };
 
-        self.sessions
+        let pair = self
+            .sessions
             .refresh(schema_name, token, enrichment.as_ref())
-            .await
+            .await?;
+        self.coordinator
+            .emit_audit_event(
+                "session.refresh",
+                &format!("{schema_name}/{entity_id}"),
+                &entity_id,
+            )
+            .await?;
+        Ok(pair)
     }
 
     pub async fn session_revoke(&self, schema_name: &str, token: &str) -> Result<(), SigilError> {
-        self.sessions.revoke(schema_name, token).await
+        let entity_id = self.sessions.peek_entity_id(schema_name, token).await?;
+        self.coordinator
+            .check_policy(&entity_id, schema_name, "session.revoke")
+            .await?;
+        self.sessions.revoke(schema_name, token).await?;
+        self.coordinator
+            .emit_audit_event(
+                "session.revoke",
+                &format!("{schema_name}/{entity_id}"),
+                &entity_id,
+            )
+            .await
     }
 
     pub async fn session_revoke_all(
@@ -343,7 +416,18 @@ impl<S: Store> SigilEngine<S> {
         schema_name: &str,
         entity_id: &str,
     ) -> Result<u64, SigilError> {
-        self.sessions.revoke_all(schema_name, entity_id).await
+        self.coordinator
+            .check_policy(entity_id, schema_name, "session.revoke_all")
+            .await?;
+        let count = self.sessions.revoke_all(schema_name, entity_id).await?;
+        self.coordinator
+            .emit_audit_event(
+                "session.revoke_all",
+                &format!("{schema_name}/{entity_id}"),
+                entity_id,
+            )
+            .await?;
+        Ok(count)
     }
 
     pub async fn session_list(
@@ -351,7 +435,18 @@ impl<S: Store> SigilEngine<S> {
         schema_name: &str,
         entity_id: &str,
     ) -> Result<Vec<shroudb_sigil_core::session::RefreshTokenRecord>, SigilError> {
-        self.sessions.list_sessions(schema_name, entity_id).await
+        self.coordinator
+            .check_policy(entity_id, schema_name, "session.list")
+            .await?;
+        let records = self.sessions.list_sessions(schema_name, entity_id).await?;
+        self.coordinator
+            .emit_audit_event(
+                "session.list",
+                &format!("{schema_name}/{entity_id}"),
+                entity_id,
+            )
+            .await?;
+        Ok(records)
     }
 
     // ── Credential operations ───────────────────────────────────────
@@ -367,6 +462,9 @@ impl<S: Store> SigilEngine<S> {
     ) -> Result<(), SigilError> {
         let schema = self.schemas.get(schema_name).await?;
         let policy = resolve_credential_policy(&schema, field_name)?;
+        self.coordinator
+            .check_policy(entity_id, schema_name, "credential.change")
+            .await?;
         self.credentials
             .change_credential(
                 schema_name,
@@ -375,6 +473,13 @@ impl<S: Store> SigilEngine<S> {
                 old_value,
                 new_value,
                 &policy,
+            )
+            .await?;
+        self.coordinator
+            .emit_audit_event(
+                "credential.change",
+                &format!("{schema_name}/{entity_id}/{field_name}"),
+                entity_id,
             )
             .await
     }
@@ -388,8 +493,18 @@ impl<S: Store> SigilEngine<S> {
     ) -> Result<(), SigilError> {
         let schema = self.schemas.get(schema_name).await?;
         let policy = resolve_credential_policy(&schema, field_name)?;
+        self.coordinator
+            .check_policy(entity_id, schema_name, "credential.reset")
+            .await?;
         self.credentials
             .reset_credential(schema_name, entity_id, field_name, new_value, &policy)
+            .await?;
+        self.coordinator
+            .emit_audit_event(
+                "credential.reset",
+                &format!("{schema_name}/{entity_id}/{field_name}"),
+                entity_id,
+            )
             .await
     }
 
@@ -402,9 +517,21 @@ impl<S: Store> SigilEngine<S> {
     ) -> Result<shroudb_sigil_core::credential::PasswordAlgorithm, SigilError> {
         let schema = self.schemas.get(schema_name).await?;
         let policy = resolve_credential_policy(&schema, field_name)?;
-        self.credentials
+        self.coordinator
+            .check_policy(entity_id, schema_name, "credential.import")
+            .await?;
+        let algo = self
+            .credentials
             .import_credential(schema_name, entity_id, field_name, hash, &policy)
-            .await
+            .await?;
+        self.coordinator
+            .emit_audit_event(
+                "credential.import",
+                &format!("{schema_name}/{entity_id}/{field_name}"),
+                entity_id,
+            )
+            .await?;
+        Ok(algo)
     }
 
     // ── Password sugar (infers credential field from schema) ────────
@@ -520,4 +647,141 @@ fn resolve_credential_policy(
                 schema.name
             ))
         })
+}
+
+#[cfg(test)]
+mod debt_tests {
+    //! Engine-level debt tests (AUDIT_2026-04-17). Hard ratchet.
+
+    use super::*;
+    use crate::schema_registry::tests::create_test_store;
+    use crate::test_support::{RecordingChronicle, RecordingSentry};
+    use shroudb_sigil_core::credential::PasswordAlgorithm;
+    use shroudb_sigil_core::field_kind::{CredentialPolicy, FieldKind, LockoutPolicy};
+    use shroudb_sigil_core::schema::{FieldDef, FieldType};
+
+    fn debt_schema() -> Schema {
+        Schema {
+            name: "debt_app".to_string(),
+            version: 1,
+            fields: vec![FieldDef::with_kind(
+                "password",
+                FieldType::String,
+                FieldKind::Credential(CredentialPolicy {
+                    algorithm: PasswordAlgorithm::Argon2id,
+                    min_length: None,
+                    max_length: None,
+                    lockout: Some(LockoutPolicy {
+                        max_attempts: 5,
+                        duration_secs: 900,
+                    }),
+                }),
+                true,
+            )],
+        }
+    }
+
+    async fn engine_with_recorders() -> (
+        Arc<SigilEngine<shroudb_storage::EmbeddedStore>>,
+        std::sync::Arc<std::sync::Mutex<Vec<shroudb_acl::PolicyRequest>>>,
+        std::sync::Arc<std::sync::Mutex<Vec<shroudb_chronicle_core::event::Event>>>,
+    ) {
+        let store = create_test_store().await;
+        let (sentry, reqs) = RecordingSentry::new();
+        let (chronicle, events) = RecordingChronicle::new();
+        let caps = Capabilities {
+            sentry: shroudb_server_bootstrap::Capability::Enabled(sentry),
+            chronicle: shroudb_server_bootstrap::Capability::Enabled(chronicle),
+            ..Capabilities::for_tests()
+        };
+        let engine = Arc::new(
+            SigilEngine::new(store, SigilConfig::default(), caps)
+                .await
+                .expect("engine init"),
+        );
+        (engine, reqs, events)
+    }
+
+    /// DEBT-F5 (AUDIT_2026-04-17): `schema_register` and `schema_alter`
+    /// emit audit events with `actor: "system"` hardcoded. Administrative
+    /// schema mutations are audited as from nobody. Fix: thread
+    /// AuthContext.actor through to schema ops.
+    #[tokio::test]
+    async fn debt_f05_schema_ops_audit_actor_must_not_be_literal_system() {
+        let (engine, _reqs, events) = engine_with_recorders().await;
+        engine
+            .schema_register(debt_schema())
+            .await
+            .expect("register");
+
+        let events = events.lock().unwrap();
+        let schema_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.operation.starts_with("schema."))
+            .collect();
+        assert!(
+            !schema_events.is_empty(),
+            "DEBT-F5: no schema.* audit event emitted"
+        );
+        for ev in schema_events {
+            assert_ne!(
+                ev.actor, "system",
+                "DEBT-F5: schema op actor is literal 'system'. Thread caller."
+            );
+        }
+    }
+
+    /// DEBT-F6 (AUDIT_2026-04-17): `envelope_lookup` calls
+    /// `check_policy("", schema_name, "lookup")` with an empty principal
+    /// because the engine doesn't know the caller. Fix: thread caller so
+    /// lookup policy evaluates against a real principal.
+    #[tokio::test]
+    async fn debt_f06_lookup_policy_principal_must_not_be_empty() {
+        // Trigger the lookup path by registering schema + calling
+        // envelope_lookup (which will fail EntityNotFound but still emits
+        // policy check first).
+        let (engine, reqs, _events) = engine_with_recorders().await;
+        engine
+            .schema_register(debt_schema())
+            .await
+            .expect("register");
+
+        // lookup will fail (no veil capability in this test), but
+        // `check_policy` runs before the veil call in engine.rs — so the
+        // policy request is still recorded.
+        let _ = engine.envelope_lookup("debt_app", "email", "alice@x").await;
+
+        let requests = reqs.lock().unwrap();
+        let lookup_reqs: Vec<_> = requests.iter().filter(|r| r.action == "lookup").collect();
+        assert!(
+            !lookup_reqs.is_empty(),
+            "DEBT-F6: lookup did not invoke policy check"
+        );
+        for req in lookup_reqs {
+            assert!(
+                !req.principal.id.is_empty(),
+                "DEBT-F6: lookup principal is empty. Thread caller."
+            );
+        }
+    }
+
+    /// DEBT-F10 (AUDIT_2026-04-17): `SigilEngine::new` accepts empty
+    /// `Capabilities`. A production deployment missing Sentry or Chronicle
+    /// runs without authorization enforcement and without audit — and
+    /// nobody is informed. Fix: add strict-mode construction that errors
+    /// when required capabilities are absent, OR log a loud warning
+    /// (tracing::warn! at minimum) on startup when they are None.
+    #[tokio::test]
+    async fn debt_f10_production_construction_must_reject_empty_capabilities() {
+        let store = create_test_store().await;
+        // Currently succeeds — the bug.
+        let result =
+            SigilEngine::new(store, SigilConfig::default(), Capabilities::for_tests()).await;
+        assert!(
+            result.is_err(),
+            "DEBT-F10: SigilEngine::new(.., Capabilities::for_tests()) succeeds silently. \
+             Production can deploy without Sentry/Chronicle. \
+             Fix: require them by default, add an opt-in `permissive` mode for tests."
+        );
+    }
 }

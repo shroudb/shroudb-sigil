@@ -60,13 +60,13 @@ impl<S: Store> WriteCoordinator<S> {
     /// Emit an audit event to Chronicle. Fails closed: if Chronicle is configured
     /// but unreachable, the calling operation fails. Security infrastructure must
     /// not allow unaudited credential operations.
-    async fn emit_audit_event(
+    pub(crate) async fn emit_audit_event(
         &self,
         operation: &str,
         resource: &str,
         actor: &str,
     ) -> Result<(), SigilError> {
-        let Some(chronicle) = &self.capabilities.chronicle else {
+        let Some(chronicle) = self.capabilities.chronicle.as_ref() else {
             return Ok(());
         };
         let event = shroudb_chronicle_core::event::Event {
@@ -92,13 +92,13 @@ impl<S: Store> WriteCoordinator<S> {
             .map_err(|e| SigilError::Internal(format!("audit event failed: {e}")))
     }
 
-    async fn check_policy(
+    pub(crate) async fn check_policy(
         &self,
         entity_id: &str,
         schema_name: &str,
         action: &str,
     ) -> Result<(), SigilError> {
-        let Some(sentry) = &self.capabilities.sentry else {
+        let Some(sentry) = self.capabilities.sentry.as_ref() else {
             return Ok(());
         };
         let request = PolicyRequest {
@@ -609,7 +609,7 @@ impl<S: Store> WriteCoordinator<S> {
                     }
                 }
                 FieldTreatment::SearchableEncrypted => {
-                    if let Some(veil) = &self.capabilities.veil {
+                    if let Some(veil) = self.capabilities.veil.as_ref() {
                         let entry_id = format!("{entity_id}/{}", field_def.name);
                         if let Err(e) = veil.delete(&entry_id).await {
                             tracing::warn!(
@@ -623,7 +623,7 @@ impl<S: Store> WriteCoordinator<S> {
                     }
                 }
                 FieldTreatment::VersionedSecret => {
-                    if let Some(keep) = &self.capabilities.keep {
+                    if let Some(keep) = self.capabilities.keep.as_ref() {
                         let path = format!("{schema_name}/{entity_id}/{}", field_def.name);
                         if let Err(e) = keep.delete_secret(&path).await {
                             tracing::warn!(
@@ -903,7 +903,7 @@ impl<S: Store> WriteCoordinator<S> {
                     }
                 }
                 CompensatingOp::Veil { entry_id } => {
-                    if let Some(veil) = &self.capabilities.veil
+                    if let Some(veil) = self.capabilities.veil.as_ref()
                         && let Err(e) = veil.delete(&entry_id).await
                     {
                         let desc = format!("veil:{entry_id}");
@@ -916,7 +916,7 @@ impl<S: Store> WriteCoordinator<S> {
                     }
                 }
                 CompensatingOp::Keep { path } => {
-                    if let Some(keep) = &self.capabilities.keep
+                    if let Some(keep) = self.capabilities.keep.as_ref()
                         && let Err(e) = keep.delete_secret(&path).await
                     {
                         let desc = format!("keep:{path}");
@@ -1031,7 +1031,7 @@ mod tests {
             store.clone(),
             EngineResourceConfig::default(),
         ));
-        let capabilities = Arc::new(Capabilities::default());
+        let capabilities = Arc::new(Capabilities::for_tests());
         let coordinator = WriteCoordinator::new(store.clone(), credentials, capabilities);
 
         (store, coordinator)
@@ -1262,7 +1262,7 @@ mod tests {
         ));
 
         // Create with no chronicle so the create succeeds.
-        let capabilities_create = Arc::new(Capabilities::default());
+        let capabilities_create = Arc::new(Capabilities::for_tests());
         let coord_create =
             WriteCoordinator::new(store.clone(), credentials.clone(), capabilities_create);
         coord_create
@@ -1272,8 +1272,8 @@ mod tests {
 
         // Now build a coordinator with a failing Chronicle for the delete.
         let capabilities_delete = Arc::new(Capabilities {
-            chronicle: Some(Arc::new(FailingChronicle)),
-            ..Default::default()
+            chronicle: shroudb_server_bootstrap::Capability::Enabled(Arc::new(FailingChronicle)),
+            ..Capabilities::for_tests()
         });
         let coord_delete =
             WriteCoordinator::new(store.clone(), credentials.clone(), capabilities_delete);
@@ -1332,9 +1332,9 @@ mod tests {
             EngineResourceConfig::default(),
         ));
         let working_caps = Arc::new(Capabilities {
-            cipher: Some(Box::new(TestCipherOps)),
-            veil: Some(Box::new(TestVeilOps::new())),
-            ..Default::default()
+            cipher: shroudb_server_bootstrap::Capability::Enabled(Box::new(TestCipherOps)),
+            veil: shroudb_server_bootstrap::Capability::Enabled(Box::new(TestVeilOps::new())),
+            ..Capabilities::for_tests()
         });
         let coord = WriteCoordinator::new(store.clone(), credentials.clone(), working_caps);
 
@@ -1347,9 +1347,9 @@ mod tests {
 
         // Delete with failing Veil — should succeed (cleanup after commit is best-effort)
         let failing_caps = Arc::new(Capabilities {
-            cipher: Some(Box::new(TestCipherOps)),
-            veil: Some(Box::new(FailingVeilDeleteOps)),
-            ..Default::default()
+            cipher: shroudb_server_bootstrap::Capability::Enabled(Box::new(TestCipherOps)),
+            veil: shroudb_server_bootstrap::Capability::Enabled(Box::new(FailingVeilDeleteOps)),
+            ..Capabilities::for_tests()
         });
         let coord_del = WriteCoordinator::new(store.clone(), credentials, failing_caps);
 
@@ -1390,7 +1390,7 @@ mod tests {
             store.clone(),
             EngineResourceConfig::default(),
         ));
-        let capabilities = Arc::new(Capabilities::default()); // no cipher
+        let capabilities = Arc::new(Capabilities::for_tests()); // no cipher
         let coord = WriteCoordinator::new(store, credentials, capabilities);
 
         let mut fields = HashMap::new();
@@ -1480,8 +1480,8 @@ mod tests {
         let keep = TestKeepOps::new();
         let keep_secrets = keep.secrets.clone();
         let capabilities = Arc::new(Capabilities {
-            keep: Some(Box::new(keep)),
-            ..Default::default() // no cipher — will fail on PII field
+            keep: shroudb_server_bootstrap::Capability::Enabled(Box::new(keep)),
+            ..Capabilities::for_tests() // no cipher — will fail on PII field
         });
 
         let credentials = Arc::new(CredentialManager::new(
@@ -1551,8 +1551,8 @@ mod tests {
         let keep = TestKeepOps::new();
         let keep_secrets = keep.secrets.clone();
         let capabilities = Arc::new(Capabilities {
-            keep: Some(Box::new(keep)),
-            ..Default::default()
+            keep: shroudb_server_bootstrap::Capability::Enabled(Box::new(keep)),
+            ..Capabilities::for_tests()
         });
 
         let credentials = Arc::new(CredentialManager::new(
@@ -1710,10 +1710,10 @@ mod tests {
         let veil = TestVeilOps::new();
         let veil_entries = veil.entries.clone();
         let capabilities = Arc::new(Capabilities {
-            cipher: Some(Box::new(TestCipherOps)),
-            veil: Some(Box::new(veil)),
+            cipher: shroudb_server_bootstrap::Capability::Enabled(Box::new(TestCipherOps)),
+            veil: shroudb_server_bootstrap::Capability::Enabled(Box::new(veil)),
             // No keep → will fail on the secret field
-            ..Default::default()
+            ..Capabilities::for_tests()
         });
 
         let credentials = Arc::new(CredentialManager::new(
@@ -1793,9 +1793,9 @@ mod tests {
         let keep = TestKeepOps::new();
         let keep_secrets = keep.secrets.clone();
         let capabilities = Arc::new(Capabilities {
-            keep: Some(Box::new(keep)),
+            keep: shroudb_server_bootstrap::Capability::Enabled(Box::new(keep)),
             // No cipher, no veil → will fail on searchable+pii field
-            ..Default::default()
+            ..Capabilities::for_tests()
         });
 
         let credentials = Arc::new(CredentialManager::new(
@@ -1928,8 +1928,8 @@ mod tests {
         registry.register(schema.clone()).await.unwrap();
 
         let capabilities = Arc::new(Capabilities {
-            chronicle: Some(Arc::new(FailingChronicleOps)),
-            ..Default::default()
+            chronicle: shroudb_server_bootstrap::Capability::Enabled(Arc::new(FailingChronicleOps)),
+            ..Capabilities::for_tests()
         });
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
@@ -1980,7 +1980,7 @@ mod tests {
             store.clone(),
             EngineResourceConfig::default(),
         ));
-        let no_chronicle = Arc::new(Capabilities::default());
+        let no_chronicle = Arc::new(Capabilities::for_tests());
         let coord_create = WriteCoordinator::new(store.clone(), credentials.clone(), no_chronicle);
 
         let mut fields = HashMap::new();
@@ -1992,8 +1992,8 @@ mod tests {
 
         // Now delete WITH failing chronicle
         let with_chronicle = Arc::new(Capabilities {
-            chronicle: Some(Arc::new(FailingChronicleOps)),
-            ..Default::default()
+            chronicle: shroudb_server_bootstrap::Capability::Enabled(Arc::new(FailingChronicleOps)),
+            ..Capabilities::for_tests()
         });
         let coord_delete = WriteCoordinator::new(store.clone(), credentials, with_chronicle);
 
@@ -2110,8 +2110,8 @@ mod tests {
         registry.register(schema.clone()).await.unwrap();
 
         let capabilities = Arc::new(Capabilities {
-            keep: Some(Box::new(SlowKeepOps)),
-            ..Default::default()
+            keep: shroudb_server_bootstrap::Capability::Enabled(Box::new(SlowKeepOps)),
+            ..Capabilities::for_tests()
         });
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
@@ -2224,9 +2224,9 @@ mod tests {
         let keep = FailingDeleteKeepOps::new();
         let keep_secrets = keep.secrets.clone();
         let capabilities = Arc::new(Capabilities {
-            keep: Some(Box::new(keep)),
+            keep: shroudb_server_bootstrap::Capability::Enabled(Box::new(keep)),
             // No cipher → will fail on PII field, triggering rollback
-            ..Default::default()
+            ..Capabilities::for_tests()
         });
 
         let credentials = Arc::new(CredentialManager::new(
@@ -2302,7 +2302,7 @@ mod tests {
         };
         registry.register(schema.clone()).await.unwrap();
 
-        let capabilities = Arc::new(Capabilities::default());
+        let capabilities = Arc::new(Capabilities::for_tests());
         let credentials = Arc::new(CredentialManager::new(
             store.clone(),
             EngineResourceConfig::default(),
@@ -2431,8 +2431,8 @@ mod tests {
             EngineResourceConfig::default(),
         ));
         let capabilities = Arc::new(Capabilities {
-            cipher: Some(Box::new(MockCipher)),
-            ..Default::default()
+            cipher: shroudb_server_bootstrap::Capability::Enabled(Box::new(MockCipher)),
+            ..Capabilities::for_tests()
         });
         WriteCoordinator::new(store, credentials, capabilities)
     }
@@ -2498,5 +2498,188 @@ mod tests {
         let record = coord.get_envelope(&schema, "user1", true).await.unwrap();
         // Non-PII fields returned as-is regardless of decrypt flag
         assert_eq!(record.fields["org_id"], "acme-corp");
+    }
+
+    // ── DEBT TESTS ────────────────────────────────────────────────────
+    //
+    // Hard-ratchet tests for half-assed wiring (AUDIT_2026-04-17).
+    // These fail until the underlying gap is fixed. Do NOT add `#[ignore]`
+    // to make `cargo test` pass — either fix the bug, or if a visible
+    // ratchet is genuinely needed, document it in TODOS.md AND on the
+    // `#[ignore = "DEBT-...: ..."]` attribute itself.
+
+    use crate::test_support::{RecordingChronicle, RecordingSentry};
+
+    async fn setup_with_recorders() -> (
+        Arc<shroudb_storage::EmbeddedStore>,
+        WriteCoordinator<shroudb_storage::EmbeddedStore>,
+        std::sync::Arc<std::sync::Mutex<Vec<PolicyRequest>>>,
+        std::sync::Arc<std::sync::Mutex<Vec<shroudb_chronicle_core::event::Event>>>,
+    ) {
+        let store = create_test_store().await;
+        let registry = SchemaRegistry::new(store.clone());
+        registry.init().await.unwrap();
+        registry.register(test_schema()).await.unwrap();
+
+        let credentials = Arc::new(CredentialManager::new(
+            store.clone(),
+            EngineResourceConfig::default(),
+        ));
+        let (sentry, reqs) = RecordingSentry::new();
+        let (chronicle, events) = RecordingChronicle::new();
+        let capabilities = Arc::new(Capabilities {
+            sentry: shroudb_server_bootstrap::Capability::Enabled(sentry),
+            chronicle: shroudb_server_bootstrap::Capability::Enabled(chronicle),
+            ..Capabilities::for_tests()
+        });
+        let coord = WriteCoordinator::new(store.clone(), credentials, capabilities);
+        (store, coord, reqs, events)
+    }
+
+    /// DEBT-F3 (AUDIT_2026-04-17): PolicyRequest.principal is currently set
+    /// to the target `entity_id`, not the authenticated caller. That's not
+    /// authorization — it's "is this entity allowed to be operated on".
+    /// Fix: thread `AuthContext` from dispatch → engine; use caller's actor
+    /// as the policy principal. See also DEBT-F2.
+    #[tokio::test]
+    async fn debt_f03_policy_principal_must_not_equal_target_entity() {
+        let (_store, coord, reqs, _events) = setup_with_recorders().await;
+        coord
+            .create_envelope(&test_schema(), "alice_target", &entity_fields())
+            .await
+            .expect("create should succeed when sentry permits");
+
+        let requests = reqs.lock().unwrap();
+        assert!(
+            !requests.is_empty(),
+            "DEBT-F3: Sentry should be invoked on create"
+        );
+        for req in requests.iter() {
+            assert_ne!(
+                req.principal.id, "alice_target",
+                "DEBT-F3: principal.id == target entity. Thread caller context."
+            );
+        }
+    }
+
+    /// DEBT-F3b (AUDIT_2026-04-17): PolicyRequest.principal.roles and
+    /// .claims are hardcoded empty. ABAC cannot evaluate without attributes.
+    #[tokio::test]
+    async fn debt_f03b_policy_principal_must_carry_roles_or_claims() {
+        let (_store, coord, reqs, _events) = setup_with_recorders().await;
+        coord
+            .create_envelope(&test_schema(), "alice", &entity_fields())
+            .await
+            .expect("create should succeed");
+        let requests = reqs.lock().unwrap();
+        let req = requests.first().expect("policy request recorded");
+        assert!(
+            !req.principal.roles.is_empty() || !req.principal.claims.is_empty(),
+            "DEBT-F3b: principal carries no roles and no claims. ABAC is blind."
+        );
+    }
+
+    /// DEBT-F4a (AUDIT_2026-04-17): audit event `actor` is currently set to
+    /// the target `entity_id`, not the caller. Chronicle receives
+    /// "alice_target performed create on alice_target" — useless for
+    /// forensics. Fix: thread caller and set actor = caller.actor.
+    #[tokio::test]
+    async fn debt_f04a_audit_event_actor_must_not_equal_target_entity() {
+        let (_store, coord, _reqs, events) = setup_with_recorders().await;
+        coord
+            .create_envelope(&test_schema(), "alice_target", &entity_fields())
+            .await
+            .expect("create should succeed");
+        let events = events.lock().unwrap();
+        assert!(
+            !events.is_empty(),
+            "DEBT-F4a: Chronicle should be invoked on create"
+        );
+        for ev in events.iter() {
+            assert_ne!(
+                ev.actor, "alice_target",
+                "DEBT-F4a: actor == target entity. Thread caller."
+            );
+        }
+    }
+
+    /// DEBT-F4b (AUDIT_2026-04-17): audit event `tenant_id` is hardcoded
+    /// None in write_coordinator.rs. Multi-tenant deployments cannot filter
+    /// audit events by tenant. Fix: thread caller tenant and populate.
+    #[tokio::test]
+    async fn debt_f04b_audit_event_tenant_must_be_populated() {
+        let (_store, coord, _reqs, events) = setup_with_recorders().await;
+        coord
+            .create_envelope(&test_schema(), "alice", &entity_fields())
+            .await
+            .expect("create should succeed");
+        let events = events.lock().unwrap();
+        let ev = events.first().expect("event recorded");
+        assert!(
+            ev.tenant_id.is_some(),
+            "DEBT-F4b: tenant_id is None. Thread caller.tenant."
+        );
+    }
+
+    /// DEBT-F4c (AUDIT_2026-04-17): audit event `duration_ms` is hardcoded
+    /// 0. Sigil never measures operation duration. Fix: wrap ops with a
+    /// start-instant, compute elapsed before emitting.
+    #[tokio::test]
+    async fn debt_f04c_audit_event_duration_must_be_measured() {
+        let (_store, coord, _reqs, events) = setup_with_recorders().await;
+        // create_envelope hashes a credential via Argon2id — always > 1ms.
+        coord
+            .create_envelope(&test_schema(), "alice", &entity_fields())
+            .await
+            .expect("create should succeed");
+        let events = events.lock().unwrap();
+        let ev = events.first().expect("event recorded");
+        assert!(
+            ev.duration_ms > 0,
+            "DEBT-F4c: duration_ms is 0. Sigil never measures op duration."
+        );
+    }
+
+    /// DEBT-F8 (AUDIT_2026-04-17): audit events are emitted only on success
+    /// (before the commit point). A failed operation (e.g. credential
+    /// verify = wrong password, duplicate create, policy deny) emits
+    /// *nothing*. Failed attempts are arguably more important to audit than
+    /// successes. Fix: emit audit on failure paths with
+    /// `result: EventResult::Fail` and a reason.
+    #[tokio::test]
+    async fn debt_f08_failed_operation_must_emit_audit_event() {
+        let (_store, coord, _reqs, events) = setup_with_recorders().await;
+
+        // First create succeeds and emits one event.
+        coord
+            .create_envelope(&test_schema(), "alice", &entity_fields())
+            .await
+            .expect("first create");
+        let events_after_success = events.lock().unwrap().len();
+
+        // Second create fails with EntityExists — must also emit.
+        let err = coord
+            .create_envelope(&test_schema(), "alice", &entity_fields())
+            .await
+            .expect_err("second create must fail");
+        assert!(matches!(err, SigilError::EntityExists));
+
+        let total = events.lock().unwrap().len();
+        assert!(
+            total > events_after_success,
+            "DEBT-F8: failed create emitted no audit event (events_before={events_after_success}, total={total})"
+        );
+
+        let fail_events: Vec<_> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| !matches!(e.result, shroudb_chronicle_core::event::EventResult::Ok))
+            .cloned()
+            .collect();
+        assert!(
+            !fail_events.is_empty(),
+            "DEBT-F8: failure event emitted with result=Ok. Should be Fail."
+        );
     }
 }

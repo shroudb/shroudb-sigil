@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use shroudb_acl::ServerAuthConfig;
+use shroudb_engine_bootstrap::{AuditConfig, PolicyConfig};
 use shroudb_sigil_core::field_kind::FieldKind;
 
 #[derive(Debug, Deserialize, Default)]
@@ -23,6 +24,12 @@ pub struct SigilServerConfig {
     pub keep: Option<KeepConfig>,
     #[serde(default)]
     pub schemas: Vec<SchemaConfig>,
+    /// Audit (Chronicle) capability slot. Absent = fail-closed at startup.
+    #[serde(default)]
+    pub audit: Option<AuditConfig>,
+    /// Policy (Sentry) capability slot. Same contract.
+    #[serde(default)]
+    pub policy: Option<PolicyConfig>,
 }
 
 /// Schema definition in config — registered at startup if not already present.
@@ -448,5 +455,54 @@ kind = { type = "inert" }
         let err = cfg.schemas[0].to_schema().unwrap_err().to_string();
         assert!(err.contains("pii"), "error was: {err}");
         assert!(err.contains("searchable"), "error was: {err}");
+    }
+
+    // ── DEBT TESTS ────────────────────────────────────────────────────
+    //
+    // Hard ratchet (AUDIT_2026-04-17). Do NOT add #[ignore] to pass CI.
+
+    /// DEBT-F1 (AUDIT_2026-04-17): `SigilServerConfig` has no `[sentry]`
+    /// or `[chronicle]` section. `main.rs` never populates
+    /// `Capabilities::sentry` or `Capabilities::chronicle`. Deploying the
+    /// standalone Sigil server means running without policy enforcement
+    /// and without audit — silently. Fix: add `SentryConfig` and
+    /// `ChronicleConfig` fields mirroring `CipherConfig`/`VeilConfig`/
+    /// `KeepConfig`, wire their remote Ops impls in `main.rs::run_server`.
+    #[test]
+    fn debt_f01_server_config_must_wire_sentry_and_chronicle() {
+        let toml = r#"
+[sentry]
+addr = "127.0.0.1:6499"
+auth_token = "test"
+
+[chronicle]
+addr = "127.0.0.1:6899"
+auth_token = "test"
+"#;
+        let cfg: SigilServerConfig = toml::from_str(toml)
+            .expect("DEBT-F1: config must accept [sentry] and [chronicle] sections");
+
+        // Access the fields — will not compile until both are declared.
+        let sentry_addr = format!("{:?}", cfg_sentry_addr(&cfg));
+        let chronicle_addr = format!("{:?}", cfg_chronicle_addr(&cfg));
+        assert!(
+            sentry_addr.contains("6499"),
+            "DEBT-F1: [sentry].addr not exposed on SigilServerConfig ({sentry_addr})"
+        );
+        assert!(
+            chronicle_addr.contains("6899"),
+            "DEBT-F1: [chronicle].addr not exposed on SigilServerConfig ({chronicle_addr})"
+        );
+    }
+
+    /// Helper shims — these deliberately fail the debt test by returning
+    /// empty strings because the fields don't exist yet. Once
+    /// `SigilServerConfig::sentry` and `::chronicle` exist, replace these
+    /// with field accesses and the test passes.
+    fn cfg_sentry_addr(_cfg: &SigilServerConfig) -> Option<String> {
+        None
+    }
+    fn cfg_chronicle_addr(_cfg: &SigilServerConfig) -> Option<String> {
+        None
     }
 }

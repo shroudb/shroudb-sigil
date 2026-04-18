@@ -92,15 +92,16 @@ async fn main() -> anyhow::Result<()> {
                 data_dir: cfg.store.data_dir.clone(),
                 ..Default::default()
             };
-            let storage_engine =
+            let storage_engine = Arc::new(
                 shroudb_storage::StorageEngine::open(engine_config, key_source.as_ref())
                     .await
-                    .context("failed to open storage engine")?;
+                    .context("failed to open storage engine")?,
+            );
             let store = Arc::new(shroudb_storage::EmbeddedStore::new(
-                Arc::new(storage_engine),
+                storage_engine.clone(),
                 "sigil",
             ));
-            run_server(cfg, store).await
+            run_server(cfg, store, Some(storage_engine)).await
         }
         "remote" => {
             let uri = cfg
@@ -114,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
                     .await
                     .context("failed to connect to remote store")?,
             );
-            run_server(cfg, store).await
+            run_server(cfg, store, None).await
         }
         other => anyhow::bail!("unknown store mode: {other}"),
     }
@@ -123,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run_server<S: Store + 'static>(
     cfg: SigilServerConfig,
     store: Arc<S>,
+    storage: Option<Arc<shroudb_storage::StorageEngine>>,
 ) -> anyhow::Result<()> {
     // Sigil engine
     let jwt_algorithm = parse_jwt_algorithm(&cfg.jwt.jwt_algorithm)?;
@@ -133,46 +135,89 @@ async fn run_server<S: Store + 'static>(
         ..Default::default()
     };
 
-    // Capabilities: connect to external engines
-    let mut capabilities = Capabilities::default();
+    // Capabilities: connect to external engines / resolve audit+policy
+    use shroudb_server_bootstrap::Capability;
 
-    if let Some(ref cipher_cfg) = cfg.cipher {
-        let cipher_ops = shroudb_sigil_engine::cipher_remote::RemoteCipherOps::connect(
-            &cipher_cfg.addr,
-            cipher_cfg.keyring.clone(),
-            cipher_cfg.auth_token.as_deref(),
-            cipher_cfg.pool_size,
-        )
-        .await
-        .context("failed to connect to cipher server")?;
-        capabilities.cipher = Some(Box::new(cipher_ops));
-        tracing::info!(addr = %cipher_cfg.addr, keyring = %cipher_cfg.keyring, "cipher connected");
-    }
+    let cipher_cap: Capability<Box<dyn shroudb_sigil_engine::capabilities::CipherOps>> =
+        if let Some(ref cipher_cfg) = cfg.cipher {
+            let cipher_ops = shroudb_sigil_engine::cipher_remote::RemoteCipherOps::connect(
+                &cipher_cfg.addr,
+                cipher_cfg.keyring.clone(),
+                cipher_cfg.auth_token.as_deref(),
+                cipher_cfg.pool_size,
+            )
+            .await
+            .context("failed to connect to cipher server")?;
+            tracing::info!(addr = %cipher_cfg.addr, keyring = %cipher_cfg.keyring, "cipher connected");
+            Capability::Enabled(Box::new(cipher_ops))
+        } else {
+            Capability::disabled(
+                "no [cipher] section in sigil config — PII fields cannot be encrypted/decrypted",
+            )
+        };
 
-    if let Some(ref veil_cfg) = cfg.veil {
-        let veil_ops = shroudb_sigil_engine::veil_remote::RemoteVeilOps::connect(
-            &veil_cfg.addr,
-            veil_cfg.index.clone(),
-            veil_cfg.auth_token.as_deref(),
-            veil_cfg.pool_size,
-        )
-        .await
-        .context("failed to connect to veil server")?;
-        capabilities.veil = Some(Box::new(veil_ops));
-        tracing::info!(addr = %veil_cfg.addr, index = %veil_cfg.index, "veil connected");
-    }
+    let veil_cap: Capability<Box<dyn shroudb_sigil_engine::capabilities::VeilOps>> =
+        if let Some(ref veil_cfg) = cfg.veil {
+            let veil_ops = shroudb_sigil_engine::veil_remote::RemoteVeilOps::connect(
+                &veil_cfg.addr,
+                veil_cfg.index.clone(),
+                veil_cfg.auth_token.as_deref(),
+                veil_cfg.pool_size,
+            )
+            .await
+            .context("failed to connect to veil server")?;
+            tracing::info!(addr = %veil_cfg.addr, index = %veil_cfg.index, "veil connected");
+            Capability::Enabled(Box::new(veil_ops))
+        } else {
+            Capability::disabled(
+                "no [veil] section in sigil config — searchable blind-index fields disabled",
+            )
+        };
 
-    if let Some(ref keep_cfg) = cfg.keep {
-        let keep_ops = shroudb_sigil_engine::keep_remote::RemoteKeepOps::connect(
-            &keep_cfg.addr,
-            keep_cfg.auth_token.as_deref(),
-            keep_cfg.pool_size,
+    let keep_cap: Capability<Box<dyn shroudb_sigil_engine::capabilities::KeepOps>> =
+        if let Some(ref keep_cfg) = cfg.keep {
+            let keep_ops = shroudb_sigil_engine::keep_remote::RemoteKeepOps::connect(
+                &keep_cfg.addr,
+                keep_cfg.auth_token.as_deref(),
+                keep_cfg.pool_size,
+            )
+            .await
+            .context("failed to connect to keep server")?;
+            tracing::info!(addr = %keep_cfg.addr, "keep connected");
+            Capability::Enabled(Box::new(keep_ops))
+        } else {
+            Capability::disabled(
+                "no [keep] section in sigil config — secret-annotated fields cannot be stored",
+            )
+        };
+
+    // Resolve [audit] and [policy] via engine-bootstrap — no silent None.
+    let audit_cfg = cfg.audit.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "missing [audit] config section. Pick one:\n  \
+             [audit] mode = \"remote\" addr = \"chronicle.internal:7300\"\n  \
+             [audit] mode = \"embedded\"\n  \
+             [audit] mode = \"disabled\" justification = \"<reason>\""
         )
+    })?;
+    let audit_cap = audit_cfg
+        .resolve(storage.clone())
         .await
-        .context("failed to connect to keep server")?;
-        capabilities.keep = Some(Box::new(keep_ops));
-        tracing::info!(addr = %keep_cfg.addr, "keep connected");
-    }
+        .context("failed to resolve [audit] capability")?;
+    let policy_cfg = cfg.policy.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "missing [policy] config section. Pick one:\n  \
+             [policy] mode = \"remote\" addr = \"sentry.internal:7100\"\n  \
+             [policy] mode = \"embedded\"\n  \
+             [policy] mode = \"disabled\" justification = \"<reason>\""
+        )
+    })?;
+    let policy_cap = policy_cfg
+        .resolve(storage.clone(), audit_cap.as_ref().cloned())
+        .await
+        .context("failed to resolve [policy] capability")?;
+
+    let capabilities = Capabilities::new(cipher_cap, veil_cap, keep_cap, policy_cap, audit_cap);
 
     let engine = Arc::new(
         SigilEngine::new(store, sigil_config, capabilities)
@@ -293,5 +338,31 @@ fn parse_jwt_algorithm(s: &str) -> anyhow::Result<JwtAlgorithm> {
         "RS512" => Ok(JwtAlgorithm::RS512),
         "EDDSA" => Ok(JwtAlgorithm::EdDSA),
         _ => anyhow::bail!("unsupported JWT algorithm: {s}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_jwt_algorithm_accepts_known_values() {
+        assert!(matches!(
+            parse_jwt_algorithm("ES256"),
+            Ok(JwtAlgorithm::ES256)
+        ));
+        assert!(matches!(
+            parse_jwt_algorithm("es256"),
+            Ok(JwtAlgorithm::ES256)
+        ));
+        assert!(matches!(
+            parse_jwt_algorithm("EDDSA"),
+            Ok(JwtAlgorithm::EdDSA)
+        ));
+    }
+
+    #[test]
+    fn parse_jwt_algorithm_rejects_unknown() {
+        assert!(parse_jwt_algorithm("HS256").is_err());
     }
 }
