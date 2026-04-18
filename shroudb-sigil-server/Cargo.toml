@@ -27,6 +27,13 @@ shroudb-protocol-wire.workspace = true
 shroudb-server-tcp.workspace = true
 shroudb-server-bootstrap.workspace = true
 shroudb-engine-bootstrap.workspace = true
+shroudb-cipher-engine.workspace = true
+shroudb-cipher-core.workspace = true
+shroudb-veil-engine.workspace = true
+shroudb-veil-core.workspace = true
+shroudb-keep-engine.workspace = true
+shroudb-keep-core.workspace = true
+base64.workspace = true
 tokio-rustls.workspace = true
 
 axum.workspace = true
@@ -44,11 +51,11 @@ uuid.workspace = true
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json", "cookies"] }
-base64.workspace = true
 shroudb-cipher-client.workspace = true
 shroudb-cipher-blind.workspace = true
 shroudb-keep-client.workspace = true
 shroudb-veil-client.workspace = true
 shroudb-veil-blind.workspace = true
+shroudb-storage = { workspace = true, features = ["testing"] }
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"

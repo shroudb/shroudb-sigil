@@ -1,11 +1,16 @@
+mod cipher_embedded;
 mod config;
+mod keep_embedded;
 mod tcp;
+mod veil_embedded;
 
 use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
-use shroudb_crypto::JwtAlgorithm;
+use shroudb_cipher_engine::engine::{CipherConfig as CipherEngineConfig, CipherEngine};
+use shroudb_crypto::{JwtAlgorithm, SecretBytes};
+use shroudb_keep_engine::engine::{KeepConfig as KeepEngineConfig, KeepEngine};
 use shroudb_sigil_engine::capabilities::Capabilities;
 use shroudb_sigil_engine::engine::{SigilConfig, SigilEngine};
 use shroudb_storage::{
@@ -13,8 +18,15 @@ use shroudb_storage::{
     StorageEngineConfig,
 };
 use shroudb_store::Store;
+use shroudb_veil_engine::engine::{VeilConfig as VeilEngineConfig, VeilEngine};
 
 use crate::config::{SigilServerConfig, load_config, parse_duration_secs};
+
+struct EmbeddedHandles {
+    cipher: Option<Arc<CipherEngine<shroudb_storage::EmbeddedStore>>>,
+    veil: Option<Arc<VeilEngine<shroudb_storage::EmbeddedStore>>>,
+    keep: Option<Arc<KeepEngine<shroudb_storage::EmbeddedStore>>>,
+}
 
 #[derive(Parser)]
 #[command(name = "shroudb-sigil", about = "Sigil credential envelope engine")]
@@ -87,6 +99,12 @@ async fn main() -> anyhow::Result<()> {
                 Box::new(EphemeralKey),
             ]));
 
+            // Embedded Keep needs the same master key the storage opens with.
+            let master_key = key_source
+                .load()
+                .await
+                .context("failed to load master key")?;
+
             // Storage engine
             let engine_config = StorageEngineConfig {
                 data_dir: cfg.store.data_dir.clone(),
@@ -101,7 +119,8 @@ async fn main() -> anyhow::Result<()> {
                 storage_engine.clone(),
                 "sigil",
             ));
-            run_server(cfg, store, Some(storage_engine)).await
+            let handles = build_embedded_handles(&cfg, storage_engine.clone(), master_key).await?;
+            run_server(cfg, store, Some(storage_engine), handles).await
         }
         "remote" => {
             let uri = cfg
@@ -115,16 +134,184 @@ async fn main() -> anyhow::Result<()> {
                     .await
                     .context("failed to connect to remote store")?,
             );
-            run_server(cfg, store, None).await
+            for (name, cfg_is_embedded) in [
+                (
+                    "cipher",
+                    cfg.cipher.as_ref().is_some_and(|c| c.is_embedded()),
+                ),
+                ("veil", cfg.veil.as_ref().is_some_and(|v| v.is_embedded())),
+                ("keep", cfg.keep.as_ref().is_some_and(|k| k.is_embedded())),
+            ] {
+                if cfg_is_embedded {
+                    anyhow::bail!(
+                        "{name}.mode = \"embedded\" requires store.mode = \"embedded\" \
+                         (embedded engines need a co-located StorageEngine)"
+                    );
+                }
+            }
+            run_server(
+                cfg,
+                store,
+                None,
+                EmbeddedHandles {
+                    cipher: None,
+                    veil: None,
+                    keep: None,
+                },
+            )
+            .await
         }
         other => anyhow::bail!("unknown store mode: {other}"),
     }
+}
+
+/// Build in-process `CipherEngine` / `VeilEngine` / `KeepEngine` instances on
+/// dedicated namespaces of the same storage engine Sigil uses, for any slot
+/// that was configured `mode = "embedded"`. Returns `None` per slot when the
+/// slot is absent or points at a remote server.
+async fn build_embedded_handles(
+    cfg: &SigilServerConfig,
+    storage: Arc<shroudb_storage::StorageEngine>,
+    master_key: SecretBytes,
+) -> anyhow::Result<EmbeddedHandles> {
+    use shroudb_cipher_core::keyring::KeyringAlgorithm;
+    use shroudb_cipher_engine::keyring_manager::KeyringCreateOpts;
+    use shroudb_server_bootstrap::Capability;
+
+    let cipher = if let Some(ref c) = cfg.cipher {
+        c.validate(&cfg.store.mode)
+            .context("invalid [cipher] config")?;
+        if c.is_embedded() {
+            let store = Arc::new(shroudb_storage::EmbeddedStore::new(
+                storage.clone(),
+                "cipher",
+            ));
+            let engine_cfg = CipherEngineConfig {
+                default_rotation_days: c.rotation_days,
+                default_drain_days: c.drain_days,
+                scheduler_interval_secs: c.scheduler_interval_secs,
+            };
+            let engine = CipherEngine::new(
+                store,
+                engine_cfg,
+                Capability::disabled(
+                    "sigil-server embedded Cipher: policy routed through Sigil's own sentry slot",
+                ),
+                Capability::disabled(
+                    "sigil-server embedded Cipher: audit routed through Sigil's own chronicle slot",
+                ),
+            )
+            .await
+            .context("failed to initialize embedded Cipher engine")?;
+
+            let algorithm: KeyringAlgorithm = c
+                .algorithm
+                .parse()
+                .map_err(|e: String| anyhow::anyhow!("invalid cipher.algorithm: {e}"))?;
+            match engine
+                .keyring_manager()
+                .create(
+                    &c.keyring,
+                    algorithm,
+                    KeyringCreateOpts {
+                        rotation_days: c.rotation_days,
+                        drain_days: c.drain_days,
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
+                Ok(_) | Err(shroudb_cipher_core::error::CipherError::KeyringExists(_)) => {}
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "failed to seed embedded cipher keyring '{}': {e}",
+                        c.keyring
+                    ));
+                }
+            }
+            tracing::info!(keyring = %c.keyring, "embedded Cipher engine initialized on 'cipher' namespace");
+            Some(Arc::new(engine))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let veil = if let Some(ref v) = cfg.veil {
+        v.validate(&cfg.store.mode)
+            .context("invalid [veil] config")?;
+        if v.is_embedded() {
+            let store = Arc::new(shroudb_storage::EmbeddedStore::new(storage.clone(), "veil"));
+            let engine = VeilEngine::new(
+                store,
+                VeilEngineConfig::default(),
+                Capability::disabled(
+                    "sigil-server embedded Veil: policy routed through Sigil's own sentry slot",
+                ),
+                Capability::disabled(
+                    "sigil-server embedded Veil: audit routed through Sigil's own chronicle slot",
+                ),
+            )
+            .await
+            .context("failed to initialize embedded Veil engine")?;
+
+            match engine.index_manager().create(&v.index).await {
+                Ok(_) | Err(shroudb_veil_core::error::VeilError::IndexExists(_)) => {}
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "failed to seed embedded veil index '{}': {e}",
+                        v.index
+                    ));
+                }
+            }
+            tracing::info!(index = %v.index, "embedded Veil engine initialized on 'veil' namespace");
+            Some(Arc::new(engine))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let keep = if let Some(ref k) = cfg.keep {
+        k.validate(&cfg.store.mode)
+            .context("invalid [keep] config")?;
+        if k.is_embedded() {
+            let store = Arc::new(shroudb_storage::EmbeddedStore::new(storage, "keep"));
+            let engine_cfg = KeepEngineConfig {
+                max_versions: k.max_versions,
+            };
+            let engine = KeepEngine::new(
+                store,
+                engine_cfg,
+                master_key,
+                Capability::disabled(
+                    "sigil-server embedded Keep: policy routed through Sigil's own sentry slot",
+                ),
+                Capability::disabled(
+                    "sigil-server embedded Keep: audit routed through Sigil's own chronicle slot",
+                ),
+            )
+            .await
+            .context("failed to initialize embedded Keep engine")?;
+            tracing::info!("embedded Keep engine initialized on 'keep' namespace");
+            Some(Arc::new(engine))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Ok(EmbeddedHandles { cipher, veil, keep })
 }
 
 async fn run_server<S: Store + 'static>(
     cfg: SigilServerConfig,
     store: Arc<S>,
     storage: Option<Arc<shroudb_storage::StorageEngine>>,
+    embedded: EmbeddedHandles,
 ) -> anyhow::Result<()> {
     // Sigil engine
     let jwt_algorithm = parse_jwt_algorithm(&cfg.jwt.jwt_algorithm)?;
@@ -138,57 +325,92 @@ async fn run_server<S: Store + 'static>(
     // Capabilities: connect to external engines / resolve audit+policy
     use shroudb_server_bootstrap::Capability;
 
-    let cipher_cap: Capability<Box<dyn shroudb_sigil_engine::capabilities::CipherOps>> =
-        if let Some(ref cipher_cfg) = cfg.cipher {
+    let cipher_cap: Capability<Box<dyn shroudb_sigil_engine::capabilities::CipherOps>> = match (
+        cfg.cipher.as_ref(),
+        embedded.cipher,
+    ) {
+        (Some(cfg_c), Some(engine)) if cfg_c.is_embedded() => {
+            tracing::info!(keyring = %cfg_c.keyring, "cipher: using embedded in-process CipherEngine");
+            Capability::Enabled(Box::new(cipher_embedded::EmbeddedCipherOps::new(
+                engine,
+                cfg_c.keyring.clone(),
+            )))
+        }
+        (Some(cfg_c), _) if cfg_c.is_remote() => {
+            let addr = cfg_c
+                .addr
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("cipher.mode = \"remote\" requires cipher.addr"))?;
             let cipher_ops = shroudb_sigil_engine::cipher_remote::RemoteCipherOps::connect(
-                &cipher_cfg.addr,
-                cipher_cfg.keyring.clone(),
-                cipher_cfg.auth_token.as_deref(),
-                cipher_cfg.pool_size,
+                addr,
+                cfg_c.keyring.clone(),
+                cfg_c.auth_token.as_deref(),
+                cfg_c.pool_size,
             )
             .await
             .context("failed to connect to cipher server")?;
-            tracing::info!(addr = %cipher_cfg.addr, keyring = %cipher_cfg.keyring, "cipher connected");
+            tracing::info!(addr, keyring = %cfg_c.keyring, "cipher connected");
             Capability::Enabled(Box::new(cipher_ops))
-        } else {
-            Capability::disabled(
-                "no [cipher] section in sigil config — PII fields cannot be encrypted/decrypted",
-            )
-        };
+        }
+        _ => Capability::disabled(
+            "no [cipher] section in sigil config — PII fields cannot be encrypted/decrypted",
+        ),
+    };
 
     let veil_cap: Capability<Box<dyn shroudb_sigil_engine::capabilities::VeilOps>> =
-        if let Some(ref veil_cfg) = cfg.veil {
-            let veil_ops = shroudb_sigil_engine::veil_remote::RemoteVeilOps::connect(
-                &veil_cfg.addr,
-                veil_cfg.index.clone(),
-                veil_cfg.auth_token.as_deref(),
-                veil_cfg.pool_size,
-            )
-            .await
-            .context("failed to connect to veil server")?;
-            tracing::info!(addr = %veil_cfg.addr, index = %veil_cfg.index, "veil connected");
-            Capability::Enabled(Box::new(veil_ops))
-        } else {
-            Capability::disabled(
+        match (cfg.veil.as_ref(), embedded.veil) {
+            (Some(cfg_v), Some(engine)) if cfg_v.is_embedded() => {
+                tracing::info!(index = %cfg_v.index, "veil: using embedded in-process VeilEngine");
+                Capability::Enabled(Box::new(veil_embedded::EmbeddedVeilOps::new(
+                    engine,
+                    cfg_v.index.clone(),
+                )))
+            }
+            (Some(cfg_v), _) if cfg_v.is_remote() => {
+                let addr = cfg_v
+                    .addr
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("veil.mode = \"remote\" requires veil.addr"))?;
+                let veil_ops = shroudb_sigil_engine::veil_remote::RemoteVeilOps::connect(
+                    addr,
+                    cfg_v.index.clone(),
+                    cfg_v.auth_token.as_deref(),
+                    cfg_v.pool_size,
+                )
+                .await
+                .context("failed to connect to veil server")?;
+                tracing::info!(addr, index = %cfg_v.index, "veil connected");
+                Capability::Enabled(Box::new(veil_ops))
+            }
+            _ => Capability::disabled(
                 "no [veil] section in sigil config — searchable blind-index fields disabled",
-            )
+            ),
         };
 
     let keep_cap: Capability<Box<dyn shroudb_sigil_engine::capabilities::KeepOps>> =
-        if let Some(ref keep_cfg) = cfg.keep {
-            let keep_ops = shroudb_sigil_engine::keep_remote::RemoteKeepOps::connect(
-                &keep_cfg.addr,
-                keep_cfg.auth_token.as_deref(),
-                keep_cfg.pool_size,
-            )
-            .await
-            .context("failed to connect to keep server")?;
-            tracing::info!(addr = %keep_cfg.addr, "keep connected");
-            Capability::Enabled(Box::new(keep_ops))
-        } else {
-            Capability::disabled(
+        match (cfg.keep.as_ref(), embedded.keep) {
+            (Some(cfg_k), Some(engine)) if cfg_k.is_embedded() => {
+                tracing::info!("keep: using embedded in-process KeepEngine");
+                Capability::Enabled(Box::new(keep_embedded::EmbeddedKeepOps::new(engine)))
+            }
+            (Some(cfg_k), _) if cfg_k.is_remote() => {
+                let addr = cfg_k
+                    .addr
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("keep.mode = \"remote\" requires keep.addr"))?;
+                let keep_ops = shroudb_sigil_engine::keep_remote::RemoteKeepOps::connect(
+                    addr,
+                    cfg_k.auth_token.as_deref(),
+                    cfg_k.pool_size,
+                )
+                .await
+                .context("failed to connect to keep server")?;
+                tracing::info!(addr, "keep connected");
+                Capability::Enabled(Box::new(keep_ops))
+            }
+            _ => Capability::disabled(
                 "no [keep] section in sigil config — secret-annotated fields cannot be stored",
-            )
+            ),
         };
 
     // Resolve [audit] and [policy] via engine-bootstrap — no silent None.

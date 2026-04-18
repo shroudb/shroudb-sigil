@@ -132,47 +132,205 @@ impl SchemaConfig {
     }
 }
 
-/// Cipher engine connection for PII field encryption.
+/// Cipher capability slot for PII field encryption.
+///
+/// Two modes:
+/// - `mode = "remote"` (default when omitted): connect to external
+///   `shroudb-cipher` server at `addr`.
+/// - `mode = "embedded"`: bundle an in-process `CipherEngine` on the same
+///   `StorageEngine` as Sigil's metadata (distinct namespace). Requires
+///   `store.mode = "embedded"`.
 #[derive(Debug, Deserialize)]
 pub struct CipherConfig {
-    /// Cipher server address (e.g., "127.0.0.1:6599").
-    pub addr: String,
+    #[serde(default = "default_slot_mode")]
+    pub mode: String,
     /// Keyring name for PII field encryption.
+    #[serde(default = "default_cipher_keyring")]
     pub keyring: String,
-    /// Auth token for Cipher server (optional).
+
+    // Remote mode
+    #[serde(default)]
+    pub addr: Option<String>,
     #[serde(default)]
     pub auth_token: Option<String>,
-    /// Connection pool size (default: 8).
     #[serde(default)]
     pub pool_size: Option<usize>,
+
+    // Embedded mode
+    #[serde(default = "default_rotation_days")]
+    pub rotation_days: u32,
+    #[serde(default = "default_drain_days")]
+    pub drain_days: u32,
+    #[serde(default = "default_scheduler_interval_secs")]
+    pub scheduler_interval_secs: u64,
+    #[serde(default = "default_cipher_algorithm")]
+    pub algorithm: String,
 }
 
-/// Veil engine connection for searchable encrypted field indexing.
+impl CipherConfig {
+    pub fn is_embedded(&self) -> bool {
+        self.mode == "embedded"
+    }
+    pub fn is_remote(&self) -> bool {
+        self.mode == "remote"
+    }
+    pub fn validate(&self, store_mode: &str) -> anyhow::Result<()> {
+        match self.mode.as_str() {
+            "remote" => {
+                if self.addr.is_none() {
+                    anyhow::bail!("cipher.mode = \"remote\" requires cipher.addr");
+                }
+            }
+            "embedded" => {
+                if store_mode != "embedded" {
+                    anyhow::bail!(
+                        "cipher.mode = \"embedded\" requires store.mode = \"embedded\" \
+                         (embedded Cipher shares the StorageEngine with Sigil)"
+                    );
+                }
+            }
+            other => anyhow::bail!(
+                "unknown cipher.mode: {other:?} (expected \"remote\" or \"embedded\")"
+            ),
+        }
+        Ok(())
+    }
+}
+
+/// Veil capability slot for searchable encrypted field indexing.
+///
+/// Two modes:
+/// - `mode = "remote"` (default when omitted): connect to external
+///   `shroudb-veil` server at `addr`.
+/// - `mode = "embedded"`: bundle an in-process `VeilEngine` on the same
+///   `StorageEngine` as Sigil's metadata (distinct namespace). Requires
+///   `store.mode = "embedded"`.
 #[derive(Debug, Deserialize)]
 pub struct VeilConfig {
-    /// Veil server address (e.g., "127.0.0.1:6799").
-    pub addr: String,
+    #[serde(default = "default_slot_mode")]
+    pub mode: String,
     /// Index name for searchable PII fields.
+    #[serde(default = "default_veil_index")]
     pub index: String,
-    /// Auth token for Veil server (optional).
+
+    // Remote mode
+    #[serde(default)]
+    pub addr: Option<String>,
     #[serde(default)]
     pub auth_token: Option<String>,
-    /// Connection pool size (default: 8).
     #[serde(default)]
     pub pool_size: Option<usize>,
 }
 
-/// Keep engine connection for versioned secret storage.
+impl VeilConfig {
+    pub fn is_embedded(&self) -> bool {
+        self.mode == "embedded"
+    }
+    pub fn is_remote(&self) -> bool {
+        self.mode == "remote"
+    }
+    pub fn validate(&self, store_mode: &str) -> anyhow::Result<()> {
+        match self.mode.as_str() {
+            "remote" => {
+                if self.addr.is_none() {
+                    anyhow::bail!("veil.mode = \"remote\" requires veil.addr");
+                }
+            }
+            "embedded" => {
+                if store_mode != "embedded" {
+                    anyhow::bail!(
+                        "veil.mode = \"embedded\" requires store.mode = \"embedded\" \
+                         (embedded Veil shares the StorageEngine with Sigil)"
+                    );
+                }
+            }
+            other => {
+                anyhow::bail!("unknown veil.mode: {other:?} (expected \"remote\" or \"embedded\")")
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Keep capability slot for versioned secret storage.
+///
+/// Two modes:
+/// - `mode = "remote"` (default when omitted): connect to external
+///   `shroudb-keep` server at `addr`.
+/// - `mode = "embedded"`: bundle an in-process `KeepEngine` on the same
+///   `StorageEngine` as Sigil's metadata (distinct namespace). Requires
+///   `store.mode = "embedded"`.
 #[derive(Debug, Deserialize)]
 pub struct KeepConfig {
-    /// Keep server address (e.g., "127.0.0.1:6699").
-    pub addr: String,
-    /// Auth token for Keep server (optional).
+    #[serde(default = "default_slot_mode")]
+    pub mode: String,
+
+    // Remote mode
+    #[serde(default)]
+    pub addr: Option<String>,
     #[serde(default)]
     pub auth_token: Option<String>,
-    /// Connection pool size (default: 8).
     #[serde(default)]
     pub pool_size: Option<usize>,
+
+    // Embedded mode
+    #[serde(default = "default_keep_max_versions")]
+    pub max_versions: u32,
+}
+
+impl KeepConfig {
+    pub fn is_embedded(&self) -> bool {
+        self.mode == "embedded"
+    }
+    pub fn is_remote(&self) -> bool {
+        self.mode == "remote"
+    }
+    pub fn validate(&self, store_mode: &str) -> anyhow::Result<()> {
+        match self.mode.as_str() {
+            "remote" => {
+                if self.addr.is_none() {
+                    anyhow::bail!("keep.mode = \"remote\" requires keep.addr");
+                }
+            }
+            "embedded" => {
+                if store_mode != "embedded" {
+                    anyhow::bail!(
+                        "keep.mode = \"embedded\" requires store.mode = \"embedded\" \
+                         (embedded Keep shares the StorageEngine with Sigil)"
+                    );
+                }
+            }
+            other => {
+                anyhow::bail!("unknown keep.mode: {other:?} (expected \"remote\" or \"embedded\")")
+            }
+        }
+        Ok(())
+    }
+}
+
+fn default_slot_mode() -> String {
+    "remote".into()
+}
+fn default_cipher_keyring() -> String {
+    "sigil-pii".into()
+}
+fn default_veil_index() -> String {
+    "sigil-searchable".into()
+}
+fn default_rotation_days() -> u32 {
+    90
+}
+fn default_drain_days() -> u32 {
+    30
+}
+fn default_scheduler_interval_secs() -> u64 {
+    3600
+}
+fn default_cipher_algorithm() -> String {
+    "aes-256-gcm".into()
+}
+fn default_keep_max_versions() -> u32 {
+    10
 }
 
 #[derive(Debug, Deserialize)]

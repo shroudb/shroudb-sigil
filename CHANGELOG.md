@@ -4,6 +4,16 @@ All notable changes to ShrouDB Sigil are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- `[cipher] mode = "embedded"`, `[veil] mode = "embedded"`, `[keep] mode = "embedded"` config slots on `sigil-server`. When set, Sigil runs in-process `CipherEngine` / `VeilEngine` / `KeepEngine` instances on dedicated namespaces of its own `StorageEngine` and wires the narrow `CipherOps`/`VeilOps`/`KeepOps` capabilities directly — no separate sidecars required. Each slot remains `mode = "remote"` by default (existing pool-based client behavior). Embedded mode requires `store.mode = "embedded"`; mixing embedded capability with remote store fails-closed at startup.
+
+### Changed
+
+- Sentry policy checks and Chronicle audit events now fire on all entity-scoped engine paths, not just envelope create/update/delete. Reads (`envelope_get`, `envelope_verify`, `envelope_lookup`), sessions (`session_create`, `session_refresh`, `session_revoke`, `session_revoke_all`, `session_list`), credential lifecycle (`credential_change`, `credential_reset`, `credential_import`), and schema lifecycle (`schema_register`, `schema_alter`) are now gated and audited. When Sentry/Chronicle are absent from Capabilities, behavior is unchanged (calls short-circuit to Ok). When configured, an unreachable Chronicle fails the operation (fail-closed), matching existing write-path semantics. Action strings: `read`, `verify`, `lookup`, `session.*`, `credential.*`, `schema.*`.
+
 ## [v2.1.0] - 2026-04-16
 
 ### Added
