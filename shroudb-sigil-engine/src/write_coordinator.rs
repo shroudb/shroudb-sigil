@@ -10,6 +10,7 @@ use shroudb_store::Store;
 
 use zeroize::Zeroize;
 
+use crate::caller::CallerContext;
 use crate::capabilities::Capabilities;
 use crate::credential::CredentialManager;
 
@@ -60,15 +61,24 @@ impl<S: Store> WriteCoordinator<S> {
     /// Emit an audit event to Chronicle. Fails closed: if Chronicle is configured
     /// but unreachable, the calling operation fails. Security infrastructure must
     /// not allow unaudited credential operations.
+    ///
+    /// `target` is retained in `metadata["target"]` so forensics can distinguish
+    /// "actor X operated on target Y" from "actor X operated on themselves".
     pub(crate) async fn emit_audit_event(
         &self,
+        caller: &CallerContext,
         operation: &str,
         resource: &str,
-        actor: &str,
+        target: &str,
     ) -> Result<(), SigilError> {
         let Some(chronicle) = self.capabilities.chronicle.as_ref() else {
             return Ok(());
         };
+        let mut metadata: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        if !target.is_empty() {
+            metadata.insert("target".to_string(), target.to_string());
+        }
         let event = shroudb_chronicle_core::event::Event {
             id: uuid::Uuid::new_v4().to_string(),
             correlation_id: None,
@@ -79,10 +89,10 @@ impl<S: Store> WriteCoordinator<S> {
             resource_id: resource.to_string(),
             result: shroudb_chronicle_core::event::EventResult::Ok,
             duration_ms: 0,
-            actor: actor.to_string(),
-            tenant_id: None,
+            actor: caller.actor.clone(),
+            tenant_id: caller.tenant_opt(),
             diff: None,
-            metadata: Default::default(),
+            metadata,
             hash: None,
             previous_hash: None,
         };
@@ -92,25 +102,47 @@ impl<S: Store> WriteCoordinator<S> {
             .map_err(|e| SigilError::Internal(format!("audit event failed: {e}")))
     }
 
+    /// Build a `PolicyPrincipal` from the caller context. The principal is
+    /// the *caller*, not the target resource — policy evaluators must be
+    /// told who is acting, not what is being acted on. Roles and claims
+    /// come from the caller's token so ABAC has attributes to match on.
+    fn policy_principal(caller: &CallerContext) -> PolicyPrincipal {
+        let claims: std::collections::HashMap<String, String> = caller
+            .claims
+            .iter()
+            .map(|(k, v)| {
+                let rendered = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                (k.clone(), rendered)
+            })
+            .collect();
+        PolicyPrincipal {
+            id: caller.actor.clone(),
+            roles: caller.roles.clone(),
+            claims,
+        }
+    }
+
     pub(crate) async fn check_policy(
         &self,
-        entity_id: &str,
+        caller: &CallerContext,
+        target_entity: &str,
         schema_name: &str,
         action: &str,
     ) -> Result<(), SigilError> {
         let Some(sentry) = self.capabilities.sentry.as_ref() else {
             return Ok(());
         };
+        let mut resource_attrs = std::collections::HashMap::new();
+        resource_attrs.insert("entity_id".to_string(), target_entity.to_string());
         let request = PolicyRequest {
-            principal: PolicyPrincipal {
-                id: entity_id.to_string(),
-                roles: vec![],
-                claims: Default::default(),
-            },
+            principal: Self::policy_principal(caller),
             resource: PolicyResource {
                 id: schema_name.to_string(),
                 resource_type: "schema".to_string(),
-                attributes: Default::default(),
+                attributes: resource_attrs,
             },
             action: action.to_string(),
         };
@@ -130,13 +162,36 @@ impl<S: Store> WriteCoordinator<S> {
 
     /// Create an envelope by routing each field to the appropriate handler.
     /// All-or-nothing: if any field fails, all completed writes are rolled back.
+    ///
+    /// Uses `CallerContext::internal("envelope-create")` when no caller is
+    /// provided — dispatch layers must use `create_envelope_as` instead so
+    /// policy and audit see the real caller.
     pub async fn create_envelope(
         &self,
         schema: &Schema,
         entity_id: &str,
         fields: &HashMap<String, serde_json::Value>,
     ) -> Result<EnvelopeRecord, SigilError> {
-        self.create_envelope_inner(schema, entity_id, fields, false)
+        self.create_envelope_as(
+            &CallerContext::internal("envelope-create"),
+            schema,
+            entity_id,
+            fields,
+        )
+        .await
+    }
+
+    /// Create an envelope, attributing the operation to `caller`. Dispatch
+    /// layers must call this so policy checks see the actual caller and
+    /// audit events record who acted.
+    pub async fn create_envelope_as(
+        &self,
+        caller: &CallerContext,
+        schema: &Schema,
+        entity_id: &str,
+        fields: &HashMap<String, serde_json::Value>,
+    ) -> Result<EnvelopeRecord, SigilError> {
+        self.create_envelope_inner(caller, schema, entity_id, fields, false)
             .await
     }
 
@@ -151,12 +206,30 @@ impl<S: Store> WriteCoordinator<S> {
         entity_id: &str,
         fields: &HashMap<String, serde_json::Value>,
     ) -> Result<EnvelopeRecord, SigilError> {
-        self.create_envelope_inner(schema, entity_id, fields, true)
+        self.import_envelope_as(
+            &CallerContext::internal("envelope-import"),
+            schema,
+            entity_id,
+            fields,
+        )
+        .await
+    }
+
+    /// Import an envelope attributed to `caller`.
+    pub async fn import_envelope_as(
+        &self,
+        caller: &CallerContext,
+        schema: &Schema,
+        entity_id: &str,
+        fields: &HashMap<String, serde_json::Value>,
+    ) -> Result<EnvelopeRecord, SigilError> {
+        self.create_envelope_inner(caller, schema, entity_id, fields, true)
             .await
     }
 
     async fn create_envelope_inner(
         &self,
+        caller: &CallerContext,
         schema: &Schema,
         entity_id: &str,
         fields: &HashMap<String, serde_json::Value>,
@@ -180,7 +253,8 @@ impl<S: Store> WriteCoordinator<S> {
             return Err(SigilError::EntityExists);
         }
 
-        self.check_policy(entity_id, &schema.name, "create").await?;
+        self.check_policy(caller, entity_id, &schema.name, "create")
+            .await?;
 
         let mut completed_ops: Vec<CompensatingOp> = Vec::new();
         let mut record_fields: HashMap<String, serde_json::Value> = HashMap::new();
@@ -217,6 +291,7 @@ impl<S: Store> WriteCoordinator<S> {
         // Audit event before commit — fail closed if Chronicle is unreachable
         if let Err(e) = self
             .emit_audit_event(
+                caller,
                 "create",
                 &format!("{}/{}", schema.name, entity_id),
                 entity_id,
@@ -352,8 +427,28 @@ impl<S: Store> WriteCoordinator<S> {
     /// Update non-credential fields on an existing envelope.
     /// Credential fields cannot be updated through this method — use
     /// credential change/reset instead.
+    ///
+    /// Uses an internal caller context — dispatch must call
+    /// `update_envelope_as` to attribute the change to the real caller.
     pub async fn update_envelope(
         &self,
+        schema: &Schema,
+        entity_id: &str,
+        fields: &HashMap<String, serde_json::Value>,
+    ) -> Result<EnvelopeRecord, SigilError> {
+        self.update_envelope_as(
+            &CallerContext::internal("envelope-update"),
+            schema,
+            entity_id,
+            fields,
+        )
+        .await
+    }
+
+    /// Update an envelope attributed to `caller`.
+    pub async fn update_envelope_as(
+        &self,
+        caller: &CallerContext,
         schema: &Schema,
         entity_id: &str,
         fields: &HashMap<String, serde_json::Value>,
@@ -390,7 +485,8 @@ impl<S: Store> WriteCoordinator<S> {
             }
         }
 
-        self.check_policy(entity_id, &schema.name, "update").await?;
+        self.check_policy(caller, entity_id, &schema.name, "update")
+            .await?;
 
         // Process fields with rollback tracking (same pattern as create)
         let mut completed_ops: Vec<CompensatingOp> = Vec::new();
@@ -513,6 +609,7 @@ impl<S: Store> WriteCoordinator<S> {
         // Audit event before commit — fail closed if Chronicle is unreachable
         if let Err(e) = self
             .emit_audit_event(
+                caller,
                 "update",
                 &format!("{}/{}", schema.name, entity_id),
                 entity_id,
@@ -550,7 +647,23 @@ impl<S: Store> WriteCoordinator<S> {
         schema: &Schema,
         entity_id: &str,
     ) -> Result<(), SigilError> {
-        self.check_policy(entity_id, &schema.name, "delete").await?;
+        self.delete_envelope_as(
+            &CallerContext::internal("envelope-delete"),
+            schema,
+            entity_id,
+        )
+        .await
+    }
+
+    /// Delete an envelope attributed to `caller`.
+    pub async fn delete_envelope_as(
+        &self,
+        caller: &CallerContext,
+        schema: &Schema,
+        entity_id: &str,
+    ) -> Result<(), SigilError> {
+        self.check_policy(caller, entity_id, &schema.name, "delete")
+            .await?;
 
         let schema_name = &schema.name;
         let envelopes_ns = envelopes_namespace(schema_name);
@@ -564,6 +677,7 @@ impl<S: Store> WriteCoordinator<S> {
         // Audit event before commit — fail closed if Chronicle is unreachable.
         // No data has been modified yet, so failure is a clean abort.
         self.emit_audit_event(
+            caller,
             "delete",
             &format!("{}/{}", schema_name, entity_id),
             entity_id,
