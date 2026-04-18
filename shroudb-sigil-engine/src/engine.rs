@@ -97,11 +97,18 @@ impl<S: Store> SigilEngine<S> {
     // ── Schema operations ───────────────────────────────────────────
 
     pub async fn schema_register(&self, schema: Schema) -> Result<u64, SigilError> {
+        let started_at = std::time::Instant::now();
         let caller = CallerContext::internal("schema-register");
         let schema_name = schema.name.clone();
         let version = self.schemas.register(schema).await?;
         self.coordinator
-            .emit_audit_event(&caller, "schema.register", &schema_name, &schema_name)
+            .emit_audit_event(
+                &caller,
+                "schema.register",
+                &schema_name,
+                &schema_name,
+                started_at,
+            )
             .await?;
         Ok(version)
     }
@@ -120,10 +127,11 @@ impl<S: Store> SigilEngine<S> {
         add_fields: Vec<FieldDef>,
         remove_fields: Vec<String>,
     ) -> Result<Schema, SigilError> {
+        let started_at = std::time::Instant::now();
         let caller = CallerContext::internal("schema-alter");
         let schema = self.schemas.alter(name, add_fields, remove_fields).await?;
         self.coordinator
-            .emit_audit_event(&caller, "schema.alter", name, name)
+            .emit_audit_event(&caller, "schema.alter", name, name, started_at)
             .await?;
         Ok(schema)
     }
@@ -160,6 +168,7 @@ impl<S: Store> SigilEngine<S> {
         entity_id: &str,
         decrypt: bool,
     ) -> Result<EnvelopeRecord, SigilError> {
+        let started_at = std::time::Instant::now();
         let caller = CallerContext::internal("envelope-get");
         let schema = self.schemas.get(schema_name).await?;
         self.coordinator
@@ -175,6 +184,7 @@ impl<S: Store> SigilEngine<S> {
                 "read",
                 &format!("{schema_name}/{entity_id}"),
                 entity_id,
+                started_at,
             )
             .await?;
         Ok(record)
@@ -209,6 +219,7 @@ impl<S: Store> SigilEngine<S> {
         field_name: &str,
         value: &str,
     ) -> Result<bool, SigilError> {
+        let started_at = std::time::Instant::now();
         let caller = CallerContext::internal("envelope-verify");
         let schema = self.schemas.get(schema_name).await?;
         let policy = resolve_credential_policy(&schema, field_name)?;
@@ -225,6 +236,7 @@ impl<S: Store> SigilEngine<S> {
                 "verify",
                 &format!("{schema_name}/{entity_id}/{field_name}"),
                 entity_id,
+                started_at,
             )
             .await?;
         Ok(ok)
@@ -238,6 +250,7 @@ impl<S: Store> SigilEngine<S> {
         field_name: &str,
         field_value: &str,
     ) -> Result<String, SigilError> {
+        let started_at = std::time::Instant::now();
         let caller = CallerContext::internal("envelope-lookup");
         self.coordinator
             .check_policy(&caller, "", schema_name, "lookup")
@@ -252,6 +265,7 @@ impl<S: Store> SigilEngine<S> {
                 "lookup",
                 &format!("{schema_name}/{field_name}"),
                 &entity_id,
+                started_at,
             )
             .await?;
         Ok(entity_id)
@@ -350,6 +364,7 @@ impl<S: Store> SigilEngine<S> {
         password: &str,
         extra_claims: Option<&serde_json::Value>,
     ) -> Result<TokenPair, SigilError> {
+        let started_at = std::time::Instant::now();
         let caller = CallerContext::internal("session-create");
         // Verify credentials first (infers credential field from schema)
         let schema = self.schemas.get(schema_name).await?;
@@ -376,6 +391,7 @@ impl<S: Store> SigilEngine<S> {
                 "session.create",
                 &format!("{schema_name}/{entity_id}"),
                 entity_id,
+                started_at,
             )
             .await?;
         Ok(pair)
@@ -386,6 +402,7 @@ impl<S: Store> SigilEngine<S> {
         schema_name: &str,
         token: &str,
     ) -> Result<TokenPair, SigilError> {
+        let started_at = std::time::Instant::now();
         let caller = CallerContext::internal("session-refresh");
         let schema = self.schemas.get(schema_name).await?;
         let claim_fields = schema.claim_fields();
@@ -412,12 +429,14 @@ impl<S: Store> SigilEngine<S> {
                 "session.refresh",
                 &format!("{schema_name}/{entity_id}"),
                 &entity_id,
+                started_at,
             )
             .await?;
         Ok(pair)
     }
 
     pub async fn session_revoke(&self, schema_name: &str, token: &str) -> Result<(), SigilError> {
+        let started_at = std::time::Instant::now();
         let caller = CallerContext::internal("session-revoke");
         let entity_id = self.sessions.peek_entity_id(schema_name, token).await?;
         self.coordinator
@@ -430,6 +449,7 @@ impl<S: Store> SigilEngine<S> {
                 "session.revoke",
                 &format!("{schema_name}/{entity_id}"),
                 &entity_id,
+                started_at,
             )
             .await
     }
@@ -439,6 +459,7 @@ impl<S: Store> SigilEngine<S> {
         schema_name: &str,
         entity_id: &str,
     ) -> Result<u64, SigilError> {
+        let started_at = std::time::Instant::now();
         let caller = CallerContext::internal("session-revoke-all");
         self.coordinator
             .check_policy(&caller, entity_id, schema_name, "session.revoke_all")
@@ -450,6 +471,7 @@ impl<S: Store> SigilEngine<S> {
                 "session.revoke_all",
                 &format!("{schema_name}/{entity_id}"),
                 entity_id,
+                started_at,
             )
             .await?;
         Ok(count)
@@ -460,6 +482,7 @@ impl<S: Store> SigilEngine<S> {
         schema_name: &str,
         entity_id: &str,
     ) -> Result<Vec<shroudb_sigil_core::session::RefreshTokenRecord>, SigilError> {
+        let started_at = std::time::Instant::now();
         let caller = CallerContext::internal("session-list");
         self.coordinator
             .check_policy(&caller, entity_id, schema_name, "session.list")
@@ -471,6 +494,7 @@ impl<S: Store> SigilEngine<S> {
                 "session.list",
                 &format!("{schema_name}/{entity_id}"),
                 entity_id,
+                started_at,
             )
             .await?;
         Ok(records)
@@ -487,6 +511,7 @@ impl<S: Store> SigilEngine<S> {
         old_value: &str,
         new_value: &str,
     ) -> Result<(), SigilError> {
+        let started_at = std::time::Instant::now();
         let caller = CallerContext::internal("credential-change");
         let schema = self.schemas.get(schema_name).await?;
         let policy = resolve_credential_policy(&schema, field_name)?;
@@ -509,6 +534,7 @@ impl<S: Store> SigilEngine<S> {
                 "credential.change",
                 &format!("{schema_name}/{entity_id}/{field_name}"),
                 entity_id,
+                started_at,
             )
             .await
     }
@@ -520,6 +546,7 @@ impl<S: Store> SigilEngine<S> {
         field_name: &str,
         new_value: &str,
     ) -> Result<(), SigilError> {
+        let started_at = std::time::Instant::now();
         let caller = CallerContext::internal("credential-reset");
         let schema = self.schemas.get(schema_name).await?;
         let policy = resolve_credential_policy(&schema, field_name)?;
@@ -535,6 +562,7 @@ impl<S: Store> SigilEngine<S> {
                 "credential.reset",
                 &format!("{schema_name}/{entity_id}/{field_name}"),
                 entity_id,
+                started_at,
             )
             .await
     }
@@ -546,6 +574,7 @@ impl<S: Store> SigilEngine<S> {
         field_name: &str,
         hash: &str,
     ) -> Result<shroudb_sigil_core::credential::PasswordAlgorithm, SigilError> {
+        let started_at = std::time::Instant::now();
         let caller = CallerContext::internal("credential-import");
         let schema = self.schemas.get(schema_name).await?;
         let policy = resolve_credential_policy(&schema, field_name)?;
@@ -562,6 +591,7 @@ impl<S: Store> SigilEngine<S> {
                 "credential.import",
                 &format!("{schema_name}/{entity_id}/{field_name}"),
                 entity_id,
+                started_at,
             )
             .await?;
         Ok(algo)

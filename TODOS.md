@@ -24,7 +24,7 @@ Most items below stem from three systemic gaps. Fix these holistically and ~all 
 - [x] **DEBT-F3b** — `PolicyRequest.principal` must carry roles or claims (ABAC currently blind). Test: `debt_f03b_policy_principal_must_carry_roles_or_claims` @ same file.
 - [x] **DEBT-F4a** — audit `Event.actor` must be caller's actor, not target entity. Test: `debt_f04a_audit_event_actor_must_not_equal_target_entity` @ same file.
 - [x] **DEBT-F4b** — audit `Event.tenant_id` must be populated from caller's tenant. Test: `debt_f04b_audit_event_tenant_must_be_populated` @ same file.
-- [ ] **DEBT-F4c** — audit `Event.duration_ms` must be measured (currently hardcoded 0). Test: `debt_f04c_audit_event_duration_must_be_measured` @ same file.
+- [x] **DEBT-F4c** — audit `Event.duration_ms` must be measured (currently hardcoded 0). Test: `debt_f04c_audit_event_duration_must_be_measured` @ same file.
 - [x] **DEBT-F5** — `schema_register` / `schema_alter` must not hardcode actor `"system"`. Test: `debt_f05_schema_ops_audit_actor_must_not_be_literal_system` @ `shroudb-sigil-engine/src/engine.rs`.
 - [x] **DEBT-F6** — `envelope_lookup` must not pass empty principal to `check_policy`. Test: `debt_f06_lookup_policy_principal_must_not_be_empty` @ same file.
 - [ ] **DEBT-F8** — failed operations (duplicate create, auth failure, policy deny) must emit audit events with `result: EventResult::Error`. Test: `debt_f08_failed_operation_must_emit_audit_event` @ `shroudb-sigil-engine/src/write_coordinator.rs`.

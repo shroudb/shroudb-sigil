@@ -64,12 +64,39 @@ impl<S: Store> WriteCoordinator<S> {
     ///
     /// `target` is retained in `metadata["target"]` so forensics can distinguish
     /// "actor X operated on target Y" from "actor X operated on themselves".
+    /// `started_at` is the operation's start instant; the elapsed time from
+    /// that instant is recorded as `duration_ms` so auditors can spot slow
+    /// operations (credential verification against a brute-force, for
+    /// example).
     pub(crate) async fn emit_audit_event(
         &self,
         caller: &CallerContext,
         operation: &str,
         resource: &str,
         target: &str,
+        started_at: std::time::Instant,
+    ) -> Result<(), SigilError> {
+        self.emit_audit_event_with_result(
+            caller,
+            operation,
+            resource,
+            target,
+            started_at,
+            shroudb_chronicle_core::event::EventResult::Ok,
+        )
+        .await
+    }
+
+    /// Emit an audit event carrying an explicit `result` — used on failure
+    /// paths so denied / failed ops are not invisible to forensics.
+    pub(crate) async fn emit_audit_event_with_result(
+        &self,
+        caller: &CallerContext,
+        operation: &str,
+        resource: &str,
+        target: &str,
+        started_at: std::time::Instant,
+        result: shroudb_chronicle_core::event::EventResult,
     ) -> Result<(), SigilError> {
         let Some(chronicle) = self.capabilities.chronicle.as_ref() else {
             return Ok(());
@@ -79,6 +106,11 @@ impl<S: Store> WriteCoordinator<S> {
         if !target.is_empty() {
             metadata.insert("target".to_string(), target.to_string());
         }
+        let elapsed = started_at.elapsed();
+        // Floor at 1ms so no audited op ever records duration_ms = 0. A zero
+        // duration is indistinguishable from "never measured" and defeats
+        // the point of the field.
+        let duration_ms = std::cmp::max(1, elapsed.as_millis().min(u64::MAX as u128) as u64);
         let event = shroudb_chronicle_core::event::Event {
             id: uuid::Uuid::new_v4().to_string(),
             correlation_id: None,
@@ -87,8 +119,8 @@ impl<S: Store> WriteCoordinator<S> {
             operation: operation.to_string(),
             resource_type: "schema".to_string(),
             resource_id: resource.to_string(),
-            result: shroudb_chronicle_core::event::EventResult::Ok,
-            duration_ms: 0,
+            result,
+            duration_ms,
             actor: caller.actor.clone(),
             tenant_id: caller.tenant_opt(),
             diff: None,
@@ -235,6 +267,7 @@ impl<S: Store> WriteCoordinator<S> {
         fields: &HashMap<String, serde_json::Value>,
         import_mode: bool,
     ) -> Result<EnvelopeRecord, SigilError> {
+        let started_at = std::time::Instant::now();
         // Validate all required fields are present (optional fields can be omitted)
         for field_def in &schema.fields {
             if field_def.required && !fields.contains_key(&field_def.name) {
@@ -295,6 +328,7 @@ impl<S: Store> WriteCoordinator<S> {
                 "create",
                 &format!("{}/{}", schema.name, entity_id),
                 entity_id,
+                started_at,
             )
             .await
         {
@@ -453,6 +487,7 @@ impl<S: Store> WriteCoordinator<S> {
         entity_id: &str,
         fields: &HashMap<String, serde_json::Value>,
     ) -> Result<EnvelopeRecord, SigilError> {
+        let started_at = std::time::Instant::now();
         let envelopes_ns = envelopes_namespace(&schema.name);
         let entry = self
             .store
@@ -613,6 +648,7 @@ impl<S: Store> WriteCoordinator<S> {
                 "update",
                 &format!("{}/{}", schema.name, entity_id),
                 entity_id,
+                started_at,
             )
             .await
         {
@@ -662,6 +698,7 @@ impl<S: Store> WriteCoordinator<S> {
         schema: &Schema,
         entity_id: &str,
     ) -> Result<(), SigilError> {
+        let started_at = std::time::Instant::now();
         self.check_policy(caller, entity_id, &schema.name, "delete")
             .await?;
 
@@ -681,6 +718,7 @@ impl<S: Store> WriteCoordinator<S> {
             "delete",
             &format!("{}/{}", schema_name, entity_id),
             entity_id,
+            started_at,
         )
         .await?;
 
