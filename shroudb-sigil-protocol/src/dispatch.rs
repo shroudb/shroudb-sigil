@@ -501,7 +501,7 @@ mod tests {
 
     async fn setup() -> SigilEngine<shroudb_storage::EmbeddedStore> {
         let store = shroudb_storage::test_util::create_test_store("sigil-test").await;
-        SigilEngine::new(store, SigilConfig::default(), Capabilities::for_tests())
+        SigilEngine::new_permissive(store, SigilConfig::default(), Capabilities::for_tests())
             .await
             .unwrap()
     }

@@ -55,8 +55,56 @@ pub struct SigilEngine<S: Store> {
 }
 
 impl<S: Store> SigilEngine<S> {
-    /// Create a new Sigil engine.
+    /// Create a new Sigil engine for production use.
+    ///
+    /// Rejects capability slots that are `DisabledForTests` — Sigil is
+    /// security infrastructure, and deploying without Sentry (policy) or
+    /// Chronicle (audit) means running without authorization enforcement
+    /// or audit trail. Operators that need to opt a slot out explicitly
+    /// must use `Capability::DisabledWithJustification { reason }` so the
+    /// decision is visible and reviewable.
+    ///
+    /// Tests that need a permissive config should call `new_permissive`.
     pub async fn new(
+        store: Arc<S>,
+        config: SigilConfig,
+        capabilities: Capabilities,
+    ) -> Result<Self, SigilError> {
+        Self::validate_production_capabilities(&capabilities)?;
+        Self::construct(store, config, capabilities).await
+    }
+
+    /// Create a new Sigil engine without production capability checks.
+    ///
+    /// Intended for unit tests and in-process test harnesses where
+    /// `Capabilities::for_tests()` is used to disable every slot. Never
+    /// use in a production binary — `new` is the production entry point.
+    pub async fn new_permissive(
+        store: Arc<S>,
+        config: SigilConfig,
+        capabilities: Capabilities,
+    ) -> Result<Self, SigilError> {
+        Self::construct(store, config, capabilities).await
+    }
+
+    fn validate_production_capabilities(capabilities: &Capabilities) -> Result<(), SigilError> {
+        use shroudb_server_bootstrap::Capability;
+        fn check<T>(slot: &Capability<T>, name: &str) -> Result<(), SigilError> {
+            match slot {
+                Capability::DisabledForTests => Err(SigilError::CapabilityMissing(format!(
+                    "{name} is DisabledForTests; production construction rejects test-only \
+                     capabilities. Use `Capability::DisabledWithJustification` with an \
+                     explicit reason, or call `SigilEngine::new_permissive` in tests."
+                ))),
+                Capability::Enabled(_) | Capability::DisabledWithJustification(_) => Ok(()),
+            }
+        }
+        check(&capabilities.sentry, "sentry")?;
+        check(&capabilities.chronicle, "chronicle")?;
+        Ok(())
+    }
+
+    async fn construct(
         store: Arc<S>,
         config: SigilConfig,
         capabilities: Capabilities,
@@ -758,7 +806,7 @@ mod debt_tests {
             ..Capabilities::for_tests()
         };
         let engine = Arc::new(
-            SigilEngine::new(store, SigilConfig::default(), caps)
+            SigilEngine::new_permissive(store, SigilConfig::default(), caps)
                 .await
                 .expect("engine init"),
         );

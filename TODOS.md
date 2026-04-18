@@ -28,4 +28,4 @@ Most items below stem from three systemic gaps. Fix these holistically and ~all 
 - [x] **DEBT-F5** — `schema_register` / `schema_alter` must not hardcode actor `"system"`. Test: `debt_f05_schema_ops_audit_actor_must_not_be_literal_system` @ `shroudb-sigil-engine/src/engine.rs`.
 - [x] **DEBT-F6** — `envelope_lookup` must not pass empty principal to `check_policy`. Test: `debt_f06_lookup_policy_principal_must_not_be_empty` @ same file.
 - [x] **DEBT-F8** — failed operations (duplicate create, auth failure, policy deny) must emit audit events with `result: EventResult::Error`. Test: `debt_f08_failed_operation_must_emit_audit_event` @ `shroudb-sigil-engine/src/write_coordinator.rs`.
-- [ ] **DEBT-F10** — `SigilEngine::new` must reject or loudly warn on empty `Capabilities` in production mode. Test: `debt_f10_production_construction_must_reject_empty_capabilities` @ `shroudb-sigil-engine/src/engine.rs`.
+- [x] **DEBT-F10** — `SigilEngine::new` must reject or loudly warn on empty `Capabilities` in production mode. Test: `debt_f10_production_construction_must_reject_empty_capabilities` @ `shroudb-sigil-engine/src/engine.rs`.
