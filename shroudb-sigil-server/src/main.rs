@@ -413,27 +413,16 @@ async fn run_server<S: Store + 'static>(
             ),
         };
 
-    // Resolve [chronicle] and [sentry] via engine-bootstrap — no silent None.
-    let chronicle_cfg = cfg.chronicle.clone().ok_or_else(|| {
-        anyhow::anyhow!(
-            "missing [chronicle] config section. Pick one:\n  \
-             [chronicle] mode = \"remote\" addr = \"chronicle.internal:7300\"\n  \
-             [chronicle] mode = \"embedded\"\n  \
-             [chronicle] mode = \"disabled\" justification = \"<reason>\""
-        )
-    })?;
+    // Resolve [chronicle] and [sentry] via engine-bootstrap. Omitting either
+    // section now yields the bootstrap default (embedded mode) instead of
+    // failing at startup — operators who want remote or disabled must say so
+    // explicitly. Embedded init failures still surface as hard errors.
+    let chronicle_cfg = cfg.chronicle.clone().unwrap_or_default();
     let chronicle_cap = chronicle_cfg
         .resolve(storage.clone())
         .await
         .context("failed to resolve [chronicle] capability")?;
-    let sentry_cfg = cfg.sentry.clone().ok_or_else(|| {
-        anyhow::anyhow!(
-            "missing [sentry] config section. Pick one:\n  \
-             [sentry] mode = \"remote\" addr = \"sentry.internal:7100\"\n  \
-             [sentry] mode = \"embedded\"\n  \
-             [sentry] mode = \"disabled\" justification = \"<reason>\""
-        )
-    })?;
+    let sentry_cfg = cfg.sentry.clone().unwrap_or_default();
     let sentry_cap = sentry_cfg
         .resolve(storage.clone(), chronicle_cap.as_ref().cloned())
         .await

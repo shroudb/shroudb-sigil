@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - Sentry policy checks and Chronicle audit events now fire on all entity-scoped engine paths, not just envelope create/update/delete. Reads (`envelope_get`, `envelope_verify`, `envelope_lookup`), sessions (`session_create`, `session_refresh`, `session_revoke`, `session_revoke_all`, `session_list`), credential lifecycle (`credential_change`, `credential_reset`, `credential_import`), and schema lifecycle (`schema_register`, `schema_alter`) are now gated and audited. When Sentry/Chronicle are absent from Capabilities, behavior is unchanged (calls short-circuit to Ok). When configured, an unreachable Chronicle fails the operation (fail-closed), matching existing write-path semantics. Action strings: `read`, `verify`, `lookup`, `session.*`, `credential.*`, `schema.*`.
+- `sigil-server` no longer rejects configs that omit `[chronicle]` or `[sentry]`. An absent section now resolves to `AuditConfig::default()` / `PolicyConfig::default()` from `shroudb-engine-bootstrap` 0.3.0, which default to `mode = "embedded"`. Operators who want a remote server or an explicit `disabled` posture must declare the section and set `mode` accordingly. Embedded initialization failures still fail-closed at startup.
+- Bumped `shroudb-engine-bootstrap` pin from 0.2.0 to 0.3.0 for the default-embedded behavior above.
 
 ## [v2.1.0] - 2026-04-16
 

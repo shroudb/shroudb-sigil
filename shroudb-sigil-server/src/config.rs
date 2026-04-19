@@ -24,10 +24,20 @@ pub struct SigilServerConfig {
     pub keep: Option<KeepConfig>,
     #[serde(default)]
     pub schemas: Vec<SchemaConfig>,
-    /// Chronicle (audit) capability slot. Absent = fail-closed at startup.
+    /// Chronicle (audit) capability slot.
+    ///
+    /// Absent defaults to `AuditConfig::default()` from `shroudb-engine-bootstrap`
+    /// (embedded mode as of 0.3.0). Operators who want a remote Chronicle server
+    /// or an explicit `disabled` posture must declare `[chronicle]` and set
+    /// `mode` accordingly. Embedded initialization failures fail-closed at startup.
     #[serde(default)]
     pub chronicle: Option<AuditConfig>,
-    /// Sentry (policy) capability slot. Same contract.
+    /// Sentry (policy) capability slot.
+    ///
+    /// Absent defaults to `PolicyConfig::default()` from `shroudb-engine-bootstrap`
+    /// (embedded mode as of 0.3.0). Operators who want a remote Sentry server
+    /// or an explicit `disabled` posture must declare `[sentry]` and set `mode`
+    /// accordingly. Embedded initialization failures fail-closed at startup.
     #[serde(default)]
     pub sentry: Option<PolicyConfig>,
 }
