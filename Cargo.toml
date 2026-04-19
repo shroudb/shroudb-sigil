@@ -90,9 +90,3 @@ base64 = "0.22"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 hex = "0.4"
-
-# Temporary: point shroudb-engine-bootstrap at the local checkout until the
-# 0.3.0 release (default-embedded for [audit]/[policy]) is published to the
-# shroudb registry. Remove this [patch] block once 0.3.0 is on the registry.
-[patch.shroudb]
-shroudb-engine-bootstrap = { path = "../commons/shroudb-engine-bootstrap" }

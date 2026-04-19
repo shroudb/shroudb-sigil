@@ -35,9 +35,10 @@ pub struct SigilServerConfig {
     /// Sentry (policy) capability slot.
     ///
     /// Absent defaults to `PolicyConfig::default()` from `shroudb-engine-bootstrap`
-    /// (embedded mode as of 0.3.0). Operators who want a remote Sentry server
-    /// or an explicit `disabled` posture must declare `[sentry]` and set `mode`
-    /// accordingly. Embedded initialization failures fail-closed at startup.
+    /// (disabled-with-auto-justification as of 0.3.0 — empty embedded
+    /// Sentry would deny every request). Operators who want enforcement
+    /// must declare `[sentry]` with `mode = "embedded"` (seeded rules)
+    /// or `"remote"`. Embedded init failures fail-closed at startup.
     #[serde(default)]
     pub sentry: Option<PolicyConfig>,
 }

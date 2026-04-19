@@ -223,11 +223,33 @@ impl TestKeepServer {
         let tcp_addr = format!("127.0.0.1:{tcp_port}");
         let data_dir = tempfile::tempdir().ok()?;
 
+        // Keep's engine-bootstrap 0.3.0 default for [audit] is embedded,
+        // and its audit path refuses operations without an authenticated
+        // actor. Sigil's integration harness doesn't propagate an actor
+        // across the sigil→keep capability boundary in these tests, so
+        // write a config that explicitly disables audit + policy with a
+        // test justification. Keep's CLI supports `--config`.
+        let config_path = data_dir.path().join("keep-config.toml");
+        let config_body = format!(
+            r#"
+[server]
+tcp_bind = "{tcp_addr}"
+[store]
+data_dir = "{}"
+[audit]
+mode = "disabled"
+justification = "sigil integration test: no auth context boundary"
+[policy]
+mode = "disabled"
+justification = "sigil integration test: no auth context boundary"
+"#,
+            data_dir.path().display()
+        );
+        std::fs::write(&config_path, config_body).ok()?;
+
         let child = Command::new(&binary)
-            .arg("--tcp-bind")
-            .arg(&tcp_addr)
-            .arg("--data-dir")
-            .arg(data_dir.path())
+            .arg("--config")
+            .arg(&config_path)
             .arg("--log-level")
             .arg("warn")
             .stdout(Stdio::null())
