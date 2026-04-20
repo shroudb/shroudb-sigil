@@ -93,6 +93,9 @@ impl KeepOps for RemoteKeepOps {
         &self,
         path: &str,
         value: &[u8],
+        // Remote Keep gets caller identity from the connection's AUTH
+        // context. Present for trait-shape parity.
+        _actor: &str,
     ) -> Pin<Box<dyn Future<Output = Result<u64, SigilError>> + Send + '_>> {
         let b64 = base64_encode(value);
         let path = path.to_string();
@@ -113,6 +116,9 @@ impl KeepOps for RemoteKeepOps {
     fn delete_secret(
         &self,
         path: &str,
+        // Remote Keep gets caller identity from the connection's AUTH
+        // context. Present for trait-shape parity.
+        _actor: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), SigilError>> + Send + '_>> {
         let path = path.to_string();
         Box::pin(async move {
@@ -133,4 +139,37 @@ impl KeepOps for RemoteKeepOps {
 fn base64_encode(data: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_encodes_bytes() {
+        assert_eq!(base64_encode(b"hi"), "aGk=");
+    }
+
+    /// Pins the KeepOps trait shape: both methods carry an actor.
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn keep_ops_trait_signature_includes_actor() {
+        fn _assert_takes_actor<T: KeepOps>() {
+            let _s: for<'a> fn(
+                &'a T,
+                &'a str,
+                &'a [u8],
+                &'a str,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<u64, SigilError>> + Send + 'a>,
+            > = T::store_secret;
+            let _d: for<'a> fn(
+                &'a T,
+                &'a str,
+                &'a str,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<(), SigilError>> + Send + 'a>,
+            > = T::delete_secret;
+        }
+    }
 }

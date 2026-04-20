@@ -2245,9 +2245,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-cipher-client"
-version = "1.6.0"
+version = "1.7.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "5d1922f0fc9d2a1fa3d63a014ce67a356262bc56864c17624c6048156ddb2aee"
+checksum = "b5a855984e6745d631f8f3b49e833d50e5ce5c00ec77473feb6c48c7e2e3aaf4"
 dependencies = [
  "serde",
  "serde_json",
@@ -2257,9 +2257,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-cipher-core"
-version = "1.6.0"
+version = "1.7.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "7c38183e20d322e0bcd0784cd39f422030fdd986d282de5070861d279719ad32"
+checksum = "e5c8254f2298324e41de60e4ad8ed624c0c97be96e4ccef67fe7e998d04750de"
 dependencies = [
  "base64",
  "hex",
@@ -2273,9 +2273,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-cipher-engine"
-version = "1.6.0"
+version = "1.7.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "92d4bf3c0a9ba8339a002a279480149fffb56447470d9b558bd43f1e31f3e66f"
+checksum = "ef0135723004227f2ce29bd7e93aa0f481331346857a82dc7c64cce3eca72df5"
 dependencies = [
  "base64",
  "dashmap",
@@ -2385,9 +2385,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-keep-client"
-version = "1.8.1"
+version = "1.9.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "9295ec95129ebdf11e386e1811d07fa72ea3cff40267e9160bcf4c9ba96a2a7a"
+checksum = "28e87ec72a5daeed8ea0521312b9aa3d3c081674a52d9f857745e8a7601efd4a"
 dependencies = [
  "serde",
  "serde_json",
@@ -2397,9 +2397,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-keep-core"
-version = "1.8.1"
+version = "1.9.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "ed7666f90995aed23cbd5132c5d6f6d1fb0ce24435eabb2e7ced0a5eaba7d5ce"
+checksum = "3e7d2b9693838271ff05e760c693dcd1b3b4e13ca2e558fa7c79a389d5df9865"
 dependencies = [
  "serde",
  "shroudb-crypto",
@@ -2408,9 +2408,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-keep-engine"
-version = "1.8.1"
+version = "1.9.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "c97d71a9b540fa478d9923aa76df6068394367c618793a51324f5811289e9fda"
+checksum = "aa124035eec66d3ff6a269ad80b1b46a962893ca7533edd37ee14caf960aa99b"
 dependencies = [
  "base64",
  "dashmap",
@@ -2427,6 +2427,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
  "zeroize",
 ]
 
@@ -2523,7 +2524,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-cli"
-version = "2.3.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2540,7 +2541,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-client"
-version = "2.3.0"
+version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2551,7 +2552,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-core"
-version = "2.3.0"
+version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2560,7 +2561,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-engine"
-version = "2.3.0"
+version = "3.0.0"
 dependencies = [
  "argon2",
  "base64",
@@ -2590,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-http"
-version = "2.3.0"
+version = "3.0.0"
 dependencies = [
  "axum",
  "metrics",
@@ -2607,7 +2608,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-protocol"
-version = "2.3.0"
+version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2625,7 +2626,7 @@ dependencies = [
 
 [[package]]
 name = "shroudb-sigil-server"
-version = "2.3.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2724,9 +2725,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-veil-client"
-version = "1.8.1"
+version = "1.9.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "879c51c20fda758f0f218a4e8ffe23deb7000cfc0aac28abb1a59f97e6b06ee4"
+checksum = "bb1a1df8fc592038a34f3b0fe30e9afdcbe046dee391d7b03d1a3f0e353971a1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2736,9 +2737,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-veil-core"
-version = "1.8.1"
+version = "1.9.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "4d4618d17178330ddefd368cd48c150ba1a0ee1bfc2786ba5ad961b4b1bf97c9"
+checksum = "4706511f290fdf26922bfcc2ccf8cbe2b5bb703752230ec5a7943139876b0b5a"
 dependencies = [
  "serde",
  "serde_json",
@@ -2748,9 +2749,9 @@ dependencies = [
 
 [[package]]
 name = "shroudb-veil-engine"
-version = "1.8.1"
+version = "1.9.0"
 source = "sparse+https://crates.shroudb.dev/api/v1/crates/"
-checksum = "04b0897a3e0ac522741bf3404ae97fa8099bc5f00388b2c4d6739623beae1c11"
+checksum = "ca2abecd9e8ade1723e82ea27cf4770dd81c984f73710b4d0900e77437b04d30"
 dependencies = [
  "base64",
  "dashmap",

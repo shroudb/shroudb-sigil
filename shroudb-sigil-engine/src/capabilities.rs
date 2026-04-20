@@ -11,19 +11,41 @@ type BoxFut<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, SigilError>> + Send + 'a>>;
 
 /// Trait for Cipher operations (encrypt/decrypt PII fields).
+///
+/// `actor` identifies the caller responsible for the operation so the
+/// underlying Cipher audit trail is attributable. Sigil's
+/// `CallerContext` threads the end-user actor through envelope writes;
+/// system operations (background reconciliation, startup provisioning)
+/// pass a stable sentinel. Never pass an empty string.
 pub trait CipherOps: Send + Sync {
-    fn encrypt(&self, plaintext: &[u8], context: Option<&str>) -> BoxFut<'_, String>;
-    fn decrypt(&self, ciphertext: &str, context: Option<&str>) -> BoxFut<'_, SensitiveBytes>;
+    fn encrypt(&self, plaintext: &[u8], context: Option<&str>, actor: &str) -> BoxFut<'_, String>;
+    fn decrypt(
+        &self,
+        ciphertext: &str,
+        context: Option<&str>,
+        actor: &str,
+    ) -> BoxFut<'_, SensitiveBytes>;
 }
 
 /// Trait for Veil operations (blind index for searchable encrypted fields).
+///
+/// `actor` identifies the caller responsible for the operation so the
+/// underlying Veil audit trail is attributable. Same convention as
+/// `CipherOps`.
 pub trait VeilOps: Send + Sync {
     /// Store blind tokens for an entry.
     ///
     /// When `blind` is false: `data` is plaintext — Veil tokenizes and blinds server-side.
     /// When `blind` is true: `data` is a base64-encoded BlindTokenSet JSON — Veil stores directly.
-    fn put(&self, entry_id: &str, data: &[u8], field: Option<&str>, blind: bool) -> BoxFut<'_, ()>;
-    fn delete(&self, entry_id: &str) -> BoxFut<'_, ()>;
+    fn put(
+        &self,
+        entry_id: &str,
+        data: &[u8],
+        field: Option<&str>,
+        blind: bool,
+        actor: &str,
+    ) -> BoxFut<'_, ()>;
+    fn delete(&self, entry_id: &str, actor: &str) -> BoxFut<'_, ()>;
     /// Search a blind index.
     ///
     /// When `blind` is false: `query` is plain text — Veil tokenizes and blinds server-side.
@@ -34,6 +56,7 @@ pub trait VeilOps: Send + Sync {
         field: Option<&str>,
         limit: Option<usize>,
         blind: bool,
+        actor: &str,
     ) -> BoxFut<'_, Vec<(String, f64)>>;
 }
 
@@ -44,9 +67,12 @@ pub trait VeilOps: Send + Sync {
 ///
 /// Sigil is an opaque envelope store — it never reads secrets back.
 /// Applications retrieve secrets via Keep or Courier directly.
+///
+/// `actor` identifies the caller responsible for the operation so the
+/// underlying Keep audit trail is attributable.
 pub trait KeepOps: Send + Sync {
-    fn store_secret(&self, path: &str, value: &[u8]) -> BoxFut<'_, u64>;
-    fn delete_secret(&self, path: &str) -> BoxFut<'_, ()>;
+    fn store_secret(&self, path: &str, value: &[u8], actor: &str) -> BoxFut<'_, u64>;
+    fn delete_secret(&self, path: &str, actor: &str) -> BoxFut<'_, ()>;
 }
 
 /// Engine capabilities provided at construction time.

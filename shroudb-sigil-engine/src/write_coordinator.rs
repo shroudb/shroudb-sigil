@@ -445,7 +445,13 @@ impl<S: Store> WriteCoordinator<S> {
             .ok_or_else(|| SigilError::CapabilityMissing("veil".into()))?;
 
         let results: Vec<(String, f64)> = veil
-            .search(field_value, Some(field_name), Some(1), false)
+            .search(
+                field_value,
+                Some(field_name),
+                Some(1),
+                false,
+                "sigil-internal",
+            )
             .await?;
 
         let (entry_id, _score) = results
@@ -507,7 +513,9 @@ impl<S: Store> WriteCoordinator<S> {
                         .as_str()
                         .ok_or_else(|| SigilError::Internal("PII field is not a string".into()))?;
                     let context = format!("{}/{}/{}", schema.name, entity_id, field_def.name);
-                    let plaintext_bytes = cipher.decrypt(ciphertext, Some(&context)).await?;
+                    let plaintext_bytes = cipher
+                        .decrypt(ciphertext, Some(&context), "sigil-internal")
+                        .await?;
                     let plaintext = String::from_utf8(plaintext_bytes.as_bytes().to_vec())
                         .map_err(|e| SigilError::Internal(format!("PII decode error: {e}")))?;
                     record
@@ -631,8 +639,9 @@ impl<S: Store> WriteCoordinator<S> {
                             reason: "PII field must be a string".into(),
                         })?;
                         let context = format!("{}/{}/{}", schema.name, entity_id, field_name);
-                        let ciphertext =
-                            cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
+                        let ciphertext = cipher
+                            .encrypt(plaintext.as_bytes(), Some(&context), "sigil-internal")
+                            .await?;
                         record
                             .fields
                             .insert(field_name.clone(), serde_json::json!(ciphertext));
@@ -654,8 +663,14 @@ impl<S: Store> WriteCoordinator<S> {
                             .as_ref()
                             .ok_or_else(|| SigilError::CapabilityMissing("veil".into()))?;
                         let entry_id = format!("{}/{}", entity_id, field_name);
-                        veil.put(&entry_id, tokens_b64.as_bytes(), Some(field_name), true)
-                            .await?;
+                        veil.put(
+                            &entry_id,
+                            tokens_b64.as_bytes(),
+                            Some(field_name),
+                            true,
+                            "sigil-internal",
+                        )
+                        .await?;
                         record
                             .fields
                             .insert(field_name.clone(), serde_json::json!(blind_data.value));
@@ -677,11 +692,18 @@ impl<S: Store> WriteCoordinator<S> {
                             reason: "searchable PII field must be a string".into(),
                         })?;
                         let context = format!("{}/{}/{}", schema.name, entity_id, field_name);
-                        let ciphertext =
-                            cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
-                        let entry_id = format!("{}/{}", entity_id, field_name);
-                        veil.put(&entry_id, plaintext.as_bytes(), Some(field_name), false)
+                        let ciphertext = cipher
+                            .encrypt(plaintext.as_bytes(), Some(&context), "sigil-internal")
                             .await?;
+                        let entry_id = format!("{}/{}", entity_id, field_name);
+                        veil.put(
+                            &entry_id,
+                            plaintext.as_bytes(),
+                            Some(field_name),
+                            false,
+                            "sigil-internal",
+                        )
+                        .await?;
                         record
                             .fields
                             .insert(field_name.clone(), serde_json::json!(ciphertext));
@@ -696,7 +718,9 @@ impl<S: Store> WriteCoordinator<S> {
                         .ok_or_else(|| SigilError::CapabilityMissing("keep".into()))?;
                     let mut secret_bytes = value.to_string().into_bytes();
                     let key = format!("{}/{}/{}", schema.name, entity_id, field_name);
-                    let result = keep.store_secret(&key, &secret_bytes).await;
+                    let result = keep
+                        .store_secret(&key, &secret_bytes, "sigil-internal")
+                        .await;
                     secret_bytes.zeroize();
                     result?;
                     Ok(Some(CompensatingOp::Keep { path: key }))
@@ -835,7 +859,7 @@ impl<S: Store> WriteCoordinator<S> {
                 FieldTreatment::SearchableEncrypted => {
                     if let Some(veil) = self.capabilities.veil.as_ref() {
                         let entry_id = format!("{entity_id}/{}", field_def.name);
-                        if let Err(e) = veil.delete(&entry_id).await {
+                        if let Err(e) = veil.delete(&entry_id, "sigil-internal").await {
                             tracing::warn!(
                                 schema = schema_name,
                                 entity_id,
@@ -849,7 +873,7 @@ impl<S: Store> WriteCoordinator<S> {
                 FieldTreatment::VersionedSecret => {
                     if let Some(keep) = self.capabilities.keep.as_ref() {
                         let path = format!("{schema_name}/{entity_id}/{}", field_def.name);
-                        if let Err(e) = keep.delete_secret(&path).await {
+                        if let Err(e) = keep.delete_secret(&path, "sigil-internal").await {
                             tracing::warn!(
                                 schema = schema_name,
                                 entity_id,
@@ -994,7 +1018,9 @@ impl<S: Store> WriteCoordinator<S> {
                     })?;
 
                     let context = format!("{schema_name}/{entity_id}/{field_name}");
-                    let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
+                    let ciphertext = cipher
+                        .encrypt(plaintext.as_bytes(), Some(&context), "sigil-internal")
+                        .await?;
 
                     Ok(FieldWriteResult {
                         compensating_op: None,
@@ -1021,8 +1047,14 @@ impl<S: Store> WriteCoordinator<S> {
                         .ok_or_else(|| SigilError::CapabilityMissing("veil".into()))?;
 
                     let entry_id = format!("{entity_id}/{field_name}");
-                    veil.put(&entry_id, tokens_b64.as_bytes(), Some(field_name), true)
-                        .await?;
+                    veil.put(
+                        &entry_id,
+                        tokens_b64.as_bytes(),
+                        Some(field_name),
+                        true,
+                        "sigil-internal",
+                    )
+                    .await?;
 
                     Ok(FieldWriteResult {
                         compensating_op: Some(CompensatingOp::Veil { entry_id }),
@@ -1047,10 +1079,18 @@ impl<S: Store> WriteCoordinator<S> {
                     })?;
 
                     let context = format!("{schema_name}/{entity_id}/{field_name}");
-                    let ciphertext = cipher.encrypt(plaintext.as_bytes(), Some(&context)).await?;
-                    let entry_id = format!("{entity_id}/{field_name}");
-                    veil.put(&entry_id, plaintext.as_bytes(), Some(field_name), false)
+                    let ciphertext = cipher
+                        .encrypt(plaintext.as_bytes(), Some(&context), "sigil-internal")
                         .await?;
+                    let entry_id = format!("{entity_id}/{field_name}");
+                    veil.put(
+                        &entry_id,
+                        plaintext.as_bytes(),
+                        Some(field_name),
+                        false,
+                        "sigil-internal",
+                    )
+                    .await?;
 
                     Ok(FieldWriteResult {
                         compensating_op: Some(CompensatingOp::Veil { entry_id }),
@@ -1069,7 +1109,9 @@ impl<S: Store> WriteCoordinator<S> {
 
                 let mut secret_bytes = value.to_string().into_bytes();
                 let key = format!("{schema_name}/{entity_id}/{field_name}");
-                let result = keep.store_secret(&key, &secret_bytes).await;
+                let result = keep
+                    .store_secret(&key, &secret_bytes, "sigil-internal")
+                    .await;
                 secret_bytes.zeroize();
                 result?;
 
@@ -1128,7 +1170,7 @@ impl<S: Store> WriteCoordinator<S> {
                 }
                 CompensatingOp::Veil { entry_id } => {
                     if let Some(veil) = self.capabilities.veil.as_ref()
-                        && let Err(e) = veil.delete(&entry_id).await
+                        && let Err(e) = veil.delete(&entry_id, "sigil-internal").await
                     {
                         let desc = format!("veil:{entry_id}");
                         tracing::error!(
@@ -1141,7 +1183,7 @@ impl<S: Store> WriteCoordinator<S> {
                 }
                 CompensatingOp::Keep { path } => {
                     if let Some(keep) = self.capabilities.keep.as_ref()
-                        && let Err(e) = keep.delete_secret(&path).await
+                        && let Err(e) = keep.delete_secret(&path, "sigil-internal").await
                     {
                         let desc = format!("keep:{path}");
                         tracing::error!(
@@ -1648,6 +1690,7 @@ mod tests {
             &self,
             path: &str,
             value: &[u8],
+            _actor: &str,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, SigilError>> + Send + '_>>
         {
             let path = path.to_string();
@@ -1661,6 +1704,7 @@ mod tests {
         fn delete_secret(
             &self,
             path: &str,
+            _actor: &str,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
         {
             let path = path.to_string();
@@ -1821,6 +1865,7 @@ mod tests {
             &self,
             _plaintext: &[u8],
             _context: Option<&str>,
+            _actor: &str,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<String, SigilError>> + Send + '_>,
         > {
@@ -1831,6 +1876,7 @@ mod tests {
             &self,
             _ciphertext: &str,
             _context: Option<&str>,
+            _actor: &str,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<Output = Result<shroudb_crypto::SensitiveBytes, SigilError>>
@@ -1862,6 +1908,7 @@ mod tests {
             data: &[u8],
             _field: Option<&str>,
             _blind: bool,
+            _actor: &str,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
         {
             let id = entry_id.to_string();
@@ -1875,6 +1922,7 @@ mod tests {
         fn delete(
             &self,
             entry_id: &str,
+            _actor: &str,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
         {
             let id = entry_id.to_string();
@@ -1890,6 +1938,7 @@ mod tests {
             _field: Option<&str>,
             _limit: Option<usize>,
             _blind: bool,
+            _actor: &str,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<Output = Result<Vec<(String, f64)>, SigilError>>
@@ -2243,6 +2292,7 @@ mod tests {
             _data: &[u8],
             _field: Option<&str>,
             _blind: bool,
+            _actor: &str,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
         {
             Box::pin(async { Ok(()) })
@@ -2251,6 +2301,7 @@ mod tests {
         fn delete(
             &self,
             _entry_id: &str,
+            _actor: &str,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
         {
             Box::pin(async { Err(SigilError::Internal("veil unreachable".into())) })
@@ -2262,6 +2313,7 @@ mod tests {
             _field: Option<&str>,
             _limit: Option<usize>,
             _blind: bool,
+            _actor: &str,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<Output = Result<Vec<(String, f64)>, SigilError>>
@@ -2286,6 +2338,7 @@ mod tests {
             &self,
             _path: &str,
             _value: &[u8],
+            _actor: &str,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, SigilError>> + Send + '_>>
         {
             Box::pin(async {
@@ -2297,6 +2350,7 @@ mod tests {
         fn delete_secret(
             &self,
             _path: &str,
+            _actor: &str,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
         {
             Box::pin(async { Ok(()) })
@@ -2394,6 +2448,7 @@ mod tests {
             &self,
             path: &str,
             value: &[u8],
+            _actor: &str,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, SigilError>> + Send + '_>>
         {
             let path = path.to_string();
@@ -2407,6 +2462,7 @@ mod tests {
         fn delete_secret(
             &self,
             _path: &str,
+            _actor: &str,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), SigilError>> + Send + '_>>
         {
             Box::pin(async { Err(SigilError::Internal("keep delete unreachable".into())) })
@@ -2592,6 +2648,7 @@ mod tests {
             &self,
             plaintext: &[u8],
             _context: Option<&str>,
+            _actor: &str,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<String, SigilError>> + Send + '_>,
         > {
@@ -2603,6 +2660,7 @@ mod tests {
             &self,
             ciphertext: &str,
             _context: Option<&str>,
+            _actor: &str,
         ) -> std::pin::Pin<
             Box<
                 dyn std::future::Future<Output = Result<shroudb_crypto::SensitiveBytes, SigilError>>

@@ -25,25 +25,27 @@ impl<S: Store> EmbeddedKeepOps<S> {
 }
 
 impl<S: Store + 'static> KeepOps for EmbeddedKeepOps<S> {
-    fn store_secret(&self, path: &str, value: &[u8]) -> BoxFut<'_, u64> {
+    fn store_secret(&self, path: &str, value: &[u8], actor: &str) -> BoxFut<'_, u64> {
         use base64::Engine as _;
         let p = path.to_string();
         let b64 = base64::engine::general_purpose::STANDARD.encode(value);
+        let actor = actor.to_string();
         Box::pin(async move {
             let result = self
                 .engine
-                .put(&p, &b64, None)
+                .put(&p, &b64, Some(&actor))
                 .await
                 .map_err(|e| SigilError::Internal(format!("keep put: {e}")))?;
             Ok(result.version as u64)
         })
     }
 
-    fn delete_secret(&self, path: &str) -> BoxFut<'_, ()> {
+    fn delete_secret(&self, path: &str, actor: &str) -> BoxFut<'_, ()> {
         let p = path.to_string();
+        let actor = actor.to_string();
         Box::pin(async move {
             self.engine
-                .delete(&p, None)
+                .delete(&p, Some(&actor))
                 .await
                 .map_err(|e| SigilError::Internal(format!("keep delete: {e}")))?;
             Ok(())
@@ -80,11 +82,11 @@ mod tests {
     async fn store_secret_returns_incrementing_version() {
         let ops = build_ops().await;
         let v1 = ops
-            .store_secret("users/1/api-key", b"secret-v1")
+            .store_secret("users/1/api-key", b"secret-v1", "test-actor")
             .await
             .expect("store v1");
         let v2 = ops
-            .store_secret("users/1/api-key", b"secret-v2")
+            .store_secret("users/1/api-key", b"secret-v2", "test-actor")
             .await
             .expect("store v2");
         assert_eq!(v1, 1);
@@ -94,10 +96,10 @@ mod tests {
     #[tokio::test]
     async fn delete_secret_removes_path() {
         let ops = build_ops().await;
-        ops.store_secret("users/1/api-key", b"secret")
+        ops.store_secret("users/1/api-key", b"secret", "test-actor")
             .await
             .unwrap();
-        ops.delete_secret("users/1/api-key")
+        ops.delete_secret("users/1/api-key", "test-actor")
             .await
             .expect("delete succeeds");
     }

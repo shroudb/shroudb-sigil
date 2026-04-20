@@ -97,6 +97,9 @@ impl VeilOps for RemoteVeilOps {
         data: &[u8],
         field: Option<&str>,
         blind: bool,
+        // Remote Veil gets caller identity from the connection's AUTH
+        // context. Present for trait-shape parity.
+        _actor: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), SigilError>> + Send + '_>> {
         let wire_data = if blind {
             String::from_utf8_lossy(data).into_owned()
@@ -122,6 +125,9 @@ impl VeilOps for RemoteVeilOps {
     fn delete(
         &self,
         entry_id: &str,
+        // Remote Veil gets caller identity from the connection's AUTH
+        // context. Present for trait-shape parity.
+        _actor: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), SigilError>> + Send + '_>> {
         let entry_id = entry_id.to_string();
         Box::pin(async move {
@@ -144,6 +150,9 @@ impl VeilOps for RemoteVeilOps {
         field: Option<&str>,
         limit: Option<usize>,
         blind: bool,
+        // Remote Veil gets caller identity from the connection's AUTH
+        // context. Present for trait-shape parity.
+        _actor: &str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<(String, f64)>, SigilError>> + Send + '_>> {
         let query = query.to_string();
         let field = field.map(String::from);
@@ -176,4 +185,49 @@ impl VeilOps for RemoteVeilOps {
 fn base64_encode(data: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_encodes_bytes() {
+        assert_eq!(base64_encode(b"hi"), "aGk=");
+    }
+
+    /// Pins VeilOps trait shape: put/delete/search each carry an actor.
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn veil_ops_trait_signature_includes_actor() {
+        fn _assert_takes_actor<T: VeilOps>() {
+            let _p: for<'a> fn(
+                &'a T,
+                &'a str,
+                &'a [u8],
+                Option<&'a str>,
+                bool,
+                &'a str,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<(), SigilError>> + Send + 'a>,
+            > = T::put;
+            let _d: for<'a> fn(
+                &'a T,
+                &'a str,
+                &'a str,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<(), SigilError>> + Send + 'a>,
+            > = T::delete;
+            let _s: for<'a> fn(
+                &'a T,
+                &'a str,
+                Option<&'a str>,
+                Option<usize>,
+                bool,
+                &'a str,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<Vec<(String, f64)>, SigilError>> + Send + 'a>,
+            > = T::search;
+        }
+    }
 }

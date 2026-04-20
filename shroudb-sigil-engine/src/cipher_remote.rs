@@ -98,6 +98,10 @@ impl CipherOps for RemoteCipherOps {
         &self,
         plaintext: &[u8],
         context: Option<&str>,
+        // Remote Cipher gets the caller identity from the connection's AUTH
+        // context, not from the command. Present for trait-shape parity with
+        // embedded bridges that thread actor into the engine's audit path.
+        _actor: &str,
     ) -> Pin<Box<dyn Future<Output = Result<String, SigilError>> + Send + '_>> {
         let b64 = base64_encode(plaintext);
         let context_owned = context.map(String::from);
@@ -120,6 +124,9 @@ impl CipherOps for RemoteCipherOps {
         &self,
         ciphertext: &str,
         context: Option<&str>,
+        // Remote Cipher gets the caller identity from the connection's AUTH
+        // context. Present for trait-shape parity.
+        _actor: &str,
     ) -> Pin<Box<dyn Future<Output = Result<shroudb_crypto::SensitiveBytes, SigilError>> + Send + '_>>
     {
         let ciphertext_owned = ciphertext.to_string();
@@ -150,4 +157,55 @@ fn base64_encode(data: &[u8]) -> String {
 fn base64_decode(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.decode(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Base64 round-trips are the only logic here worth pinning as a
+    /// unit test — the pool + client paths require a running remote
+    /// Cipher server and are exercised by integration tests in
+    /// `tests/cipher_remote_*.rs`.
+    #[test]
+    fn base64_round_trip() {
+        let plain = b"hello encrypted world";
+        let encoded = base64_encode(plain);
+        let decoded = base64_decode(&encoded).expect("decode ok");
+        assert_eq!(decoded, plain);
+    }
+
+    /// Pins the CipherOps trait shape at this call site: both methods
+    /// carry an actor parameter (opaque to the remote path — see
+    /// method doc comment). If the trait signature drifts, this test
+    /// fails to compile.
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn cipher_ops_trait_signature_includes_actor() {
+        fn _assert_takes_actor<T: CipherOps>() {
+            // The trait's method signatures are type-level. Reference
+            // both methods by their Fn-like shape to keep this test
+            // failing at compile time if a parameter is removed.
+            let _enc: for<'a> fn(
+                &'a T,
+                &'a [u8],
+                Option<&'a str>,
+                &'a str,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<String, SigilError>> + Send + 'a>,
+            > = T::encrypt;
+            let _dec: for<'a> fn(
+                &'a T,
+                &'a str,
+                Option<&'a str>,
+                &'a str,
+            ) -> Pin<
+                Box<
+                    dyn Future<Output = Result<shroudb_crypto::SensitiveBytes, SigilError>>
+                        + Send
+                        + 'a,
+                >,
+            > = T::decrypt;
+        }
+    }
 }

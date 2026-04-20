@@ -34,7 +34,7 @@ impl<S: Store> EmbeddedCipherOps<S> {
 }
 
 impl<S: Store + 'static> CipherOps for EmbeddedCipherOps<S> {
-    fn encrypt(&self, plaintext: &[u8], context: Option<&str>) -> BoxFut<'_, String> {
+    fn encrypt(&self, plaintext: &[u8], context: Option<&str>, _actor: &str) -> BoxFut<'_, String> {
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD.encode(plaintext);
         let ctx = context.map(|s| s.to_string());
@@ -52,6 +52,7 @@ impl<S: Store + 'static> CipherOps for EmbeddedCipherOps<S> {
         &self,
         ciphertext: &str,
         context: Option<&str>,
+        _actor: &str,
     ) -> BoxFut<'_, shroudb_crypto::SensitiveBytes> {
         let ct = ciphertext.to_string();
         let ctx = context.map(|s| s.to_string());
@@ -104,11 +105,11 @@ mod tests {
         let ops = build_ops().await;
         let plaintext = b"alice@example.com";
         let ciphertext = ops
-            .encrypt(plaintext, Some("user:1"))
+            .encrypt(plaintext, Some("user:1"), "test-actor")
             .await
             .expect("encrypt");
         let decrypted = ops
-            .decrypt(&ciphertext, Some("user:1"))
+            .decrypt(&ciphertext, Some("user:1"), "test-actor")
             .await
             .expect("decrypt");
         assert_eq!(decrypted.as_bytes(), plaintext);
@@ -118,10 +119,10 @@ mod tests {
     async fn decrypt_fails_on_wrong_context() {
         let ops = build_ops().await;
         let ciphertext = ops
-            .encrypt(b"secret", Some("user:1"))
+            .encrypt(b"secret", Some("user:1"), "test-actor")
             .await
             .expect("encrypt");
-        let result = ops.decrypt(&ciphertext, Some("user:2")).await;
+        let result = ops.decrypt(&ciphertext, Some("user:2"), "test-actor").await;
         assert!(
             result.is_err(),
             "wrong AAD context must fail-closed — Cipher binds context into the GCM tag"
