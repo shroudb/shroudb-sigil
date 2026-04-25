@@ -26,10 +26,16 @@ pub struct SigilServerConfig {
     pub schemas: Vec<SchemaConfig>,
     /// Chronicle (audit) capability slot.
     ///
-    /// Absent defaults to `AuditConfig::default()` from `shroudb-engine-bootstrap`
-    /// (embedded mode as of 0.3.0). Operators who want a remote Chronicle server
-    /// or an explicit `disabled` posture must declare `[chronicle]` and set
-    /// `mode` accordingly. Embedded initialization failures fail-closed at startup.
+    /// Absent defaults to `AuditConfig::default()` from `shroudb-engine-bootstrap`,
+    /// which is `mode = "disabled"` with an auto-generated justification
+    /// (engine-bootstrap 0.4.0+) — audit-on requires an authenticated
+    /// actor, and `[auth]` itself defaults to no validator, so
+    /// audit-by-default would deterministically fail every audited op
+    /// out-of-box. Operators opt into audit by declaring `[chronicle]`
+    /// with `mode = "embedded"` (shared storage) or `mode = "remote"`.
+    /// The server refuses to start when chronicle is enabled but
+    /// `[auth].tokens` is empty. Embedded init failures fail-closed
+    /// at startup.
     #[serde(default)]
     pub chronicle: Option<AuditConfig>,
     /// Sentry (policy) capability slot.

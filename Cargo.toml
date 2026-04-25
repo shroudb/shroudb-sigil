@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "3.0.0"
+version = "3.1.0"
 edition = "2024"
 rust-version = "1.92"
 license = "LicenseRef-Proprietary"
@@ -20,11 +20,11 @@ publish = ["shroudb"]
 
 [workspace.dependencies]
 # Internal crates
-shroudb-sigil-core = { path = "shroudb-sigil-core", version = "3.0.0", registry = "shroudb" }
-shroudb-sigil-engine = { path = "shroudb-sigil-engine", version = "3.0.0", registry = "shroudb" }
-shroudb-sigil-protocol = { path = "shroudb-sigil-protocol", version = "3.0.0", registry = "shroudb" }
-shroudb-sigil-http = { path = "shroudb-sigil-http", version = "3.0.0", registry = "shroudb" }
-shroudb-sigil-client = { path = "shroudb-sigil-client", version = "3.0.0", registry = "shroudb" }
+shroudb-sigil-core = { path = "shroudb-sigil-core", version = "3.1.0", registry = "shroudb" }
+shroudb-sigil-engine = { path = "shroudb-sigil-engine", version = "3.1.0", registry = "shroudb" }
+shroudb-sigil-protocol = { path = "shroudb-sigil-protocol", version = "3.1.0", registry = "shroudb" }
+shroudb-sigil-http = { path = "shroudb-sigil-http", version = "3.1.0", registry = "shroudb" }
+shroudb-sigil-client = { path = "shroudb-sigil-client", version = "3.1.0", registry = "shroudb" }
 
 # Embedded in-process engine options for sigil-server
 shroudb-cipher-engine = { version = "1.7.0", registry = "shroudb" }
@@ -51,7 +51,7 @@ shroudb-chronicle-core = { version = "1.11.0", registry = "shroudb" }
 shroudb-protocol-wire = { version = "0.2.0", registry = "shroudb" }
 shroudb-server-tcp = { version = "0.2.2", registry = "shroudb" }
 shroudb-server-bootstrap = { version = "0.2.0", registry = "shroudb" }
-shroudb-engine-bootstrap = { version = "0.3.0", registry = "shroudb" }
+shroudb-engine-bootstrap = { version = "0.4.0", registry = "shroudb" }
 tokio-rustls = "0.26"
 
 # Crypto
